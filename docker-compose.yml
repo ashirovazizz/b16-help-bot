@@ -1,0 +1,29 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    # Форма доступна только через обратный прокси (caddy ниже или ваш nginx)
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  # HTTPS для формы: docker compose --profile https up -d
+  # Нужен домен (DOMAIN в .env), направленный на этот сервер, и открытые порты 80/443.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bot
+
+volumes:
+  caddy_data:
+  caddy_config:

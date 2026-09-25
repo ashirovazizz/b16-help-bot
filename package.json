@@ -1,0 +1,43 @@
+{
+  "name": "b16-help-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Бот DH-центра ИТМО: заявки на создание, обновление и снятие персональных страниц сайта",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "verify": "npm run typecheck && npm run lint && npm run test",
+    "google:auth": "tsx src/scripts/google-auth.ts",
+    "setup:workbook": "tsx src/scripts/setup-workbook.ts"
+  },
+  "dependencies": {
+    "@googleapis/drive": "^26.0.1",
+    "@googleapis/sheets": "^18.0.1",
+    "@grammyjs/auto-retry": "^2.0.2",
+    "@hono/node-server": "^2.1.1",
+    "croner": "^10.0.1",
+    "google-auth-library": "^11.1.0",
+    "grammy": "^1.46.0",
+    "hono": "^4.13.9",
+    "image-size": "^2.0.4",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "@types/node": "^22.20.4",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}
