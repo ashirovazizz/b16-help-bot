@@ -153,6 +153,15 @@ describe('validation', () => {
     expect(check.fields).toEqual({ about: 'Новый текст', channel: '' });
   });
 
+  it('поле, которого нет во вводе, не считается стёртым', () => {
+    const check = checkSubmission(
+      'update',
+      { fields: { about: 'Новый текст' }, hasNewPhoto: false },
+      profile,
+    );
+    expect(check.fields).toEqual({ about: 'Новый текст' });
+  });
+
   it('не пропускает обновление без изменений, но пропускает ответ комментарием', () => {
     const same = { fields: { ...profile.fields }, hasNewPhoto: false, comment: 'уточнила' };
     expect(checkSubmission('update', same, profile).errors.form).toBeDefined();

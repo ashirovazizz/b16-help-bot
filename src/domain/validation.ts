@@ -44,6 +44,8 @@ export function checkSubmission(
   const changedKeys: FieldKey[] = [];
 
   for (const def of FIELDS) {
+    // Поле, которого нет во вводе, не меняется; пустая строка — «убрать блок»
+    const provided = Object.hasOwn(input.fields, def.key);
     const value = normalizeText(input.fields[def.key]);
     if (value.length > def.maxLength) {
       errors[def.key] = `Слишком длинно: ${value.length} из ${def.maxLength} знаков.`;
@@ -54,7 +56,7 @@ export function checkSubmission(
         fields[def.key] = value;
         changedKeys.push(def.key);
       }
-    } else if (value !== normalizeText(current?.fields[def.key])) {
+    } else if (provided && value !== normalizeText(current?.fields[def.key])) {
       fields[def.key] = value;
       changedKeys.push(def.key);
     }
