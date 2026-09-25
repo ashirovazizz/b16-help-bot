@@ -34,7 +34,17 @@ const tz = config.TIMEZONE;
 
 const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
 bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 30 }));
-await bot.init();
+log.info('Подключаюсь к Telegram');
+try {
+  // типы grammY ждут AbortSignal из полифилла, в Node он совместим со встроенным
+  await bot.init(AbortSignal.timeout(60_000) as Parameters<typeof bot.init>[0]);
+} catch (error) {
+  // Docker перезапустит сервис; причина — в журнале
+  log.error('Не удалось связаться с Telegram: проверьте токен и доступ к api.telegram.org', {
+    error,
+  });
+  process.exit(1);
+}
 const inviteLinkBase = `https://t.me/${bot.botInfo.username}?start=`;
 
 let repo: Repository;

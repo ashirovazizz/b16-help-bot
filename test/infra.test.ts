@@ -36,7 +36,7 @@ describe('config', () => {
 describe('мелочи инфраструктуры', () => {
   it('узнаёт ссылки на сайт центра', () => {
     const site = new HttpSiteChecker('https://dh.itmo.ru');
-    expect(site.isSiteUrl('https://dh.itmo.ru/kolozaridi')).toBe(true);
+    expect(site.isSiteUrl('https://dh.itmo.ru/team-member')).toBe(true);
     expect(site.isSiteUrl('https://www.dh.itmo.ru/x')).toBe(true);
     expect(site.isSiteUrl('http://dh.itmo.ru/x')).toBe(false);
     expect(site.isSiteUrl('https://dh.itmo.ru.evil.com/x')).toBe(false);

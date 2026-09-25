@@ -1,6 +1,9 @@
 services:
   bot:
-    build: .
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
     env_file: .env
     restart: unless-stopped
     # Форма доступна только через обратный прокси (caddy ниже или ваш nginx)

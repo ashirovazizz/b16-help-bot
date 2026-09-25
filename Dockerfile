@@ -1,5 +1,9 @@
+# Базовый образ можно заменить зеркалом, если Docker Hub недоступен:
+#   docker compose build --build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-alpine
+ARG NODE_IMAGE=node:22-alpine
+
 # Сборка
-FROM node:22-alpine AS build
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -8,10 +12,9 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # Запуск
-FROM node:22-alpine
-RUN apk add --no-cache tzdata
+FROM ${NODE_IMAGE}
+# Часовые пояса Node берёт из встроенной ICU, пакет tzdata не нужен
 ENV NODE_ENV=production \
-    TZ=Europe/Moscow \
     PORT=3000
 WORKDIR /app
 COPY --from=build /app/package.json ./

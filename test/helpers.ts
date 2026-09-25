@@ -98,7 +98,7 @@ export const people = {
   },
   masha: {
     personId: 'P002',
-    fullName: 'Мария Кешишян',
+    fullName: 'Мария Иванова',
     category: 'сотрудники',
     orgRole: 'координатор интеллектуальной жизни',
     status: 'active',
@@ -128,8 +128,8 @@ export const profiles: Record<string, Profile> = {
   },
   masha: {
     personId: 'P002',
-    fullName: 'Мария Кешишян',
-    pageUrl: 'https://dh.itmo.ru/keshishian',
+    fullName: 'Мария Иванова',
+    pageUrl: 'https://dh.itmo.ru/ivanova',
     publication: 'published',
     fields: { title: 'координатор интеллектуальной жизни', about: 'Про библиотеку' },
   },

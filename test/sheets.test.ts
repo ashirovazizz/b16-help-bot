@@ -45,7 +45,7 @@ describe('SheetsRepository: People', () => {
     const { sheets, repo } = repoWith({
       People: [
         ['', 'Азиз Аширов', 'сотрудники', 'координатор', 'работает', 'да', ''],
-        ['P002', 'Алексей Дурнев', 'преподаватели', 'преподаватель', 'ушёл', 'нет', 'уточнить'],
+        ['P002', 'Пётр Петров', 'преподаватели', 'преподаватель', 'ушёл', 'нет', 'уточнить'],
         [],
       ],
     });
@@ -64,7 +64,7 @@ describe('SheetsRepository: People', () => {
 
     await repo.patchPerson('P001', {
       telegramUserId: 501,
-      telegramUsername: 'ashirovazizz',
+      telegramUsername: 'aziz_test',
       boundAt: at('2026-09-28 10:00'),
       inviteCode: null,
     });
@@ -78,12 +78,12 @@ describe('SheetsRepository: People', () => {
       'да',
       '',
       501,
-      '@ashirovazizz',
+      '@aziz_test',
       '2026-09-28 10:00',
       '',
     ]);
     const [aziz] = await repo.listPeople();
-    expect(aziz).toMatchObject({ telegramUserId: 501, telegramUsername: 'ashirovazizz' });
+    expect(aziz).toMatchObject({ telegramUserId: 501, telegramUsername: 'aziz_test' });
   });
 
   it('хранит приглашение ссылкой и достаёт из неё код', async () => {
