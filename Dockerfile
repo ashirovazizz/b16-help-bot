@@ -1,5 +1,5 @@
 # Базовый образ можно заменить зеркалом, если Docker Hub недоступен:
-#   docker compose build --build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-alpine
+#   NODE_IMAGE=mirror.gcr.io/library/node:22-alpine в .env
 ARG NODE_IMAGE=node:22-alpine
 
 # Сборка
@@ -15,13 +15,11 @@ RUN npm run build && npm prune --omit=dev
 FROM ${NODE_IMAGE}
 # Часовые пояса Node берёт из встроенной ICU, пакет tzdata не нужен
 ENV NODE_ENV=production \
-    PORT=3000
+    DATA_DIR=/app/data
 WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+RUN mkdir -p /app/data && chown node:node /app/data
 USER node
-EXPOSE 3000
-HEALTHCHECK --interval=1m --timeout=5s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1
 CMD ["node", "dist/main.js"]

@@ -9,7 +9,6 @@ import {
   parseDateTime,
   zonedToUtc,
 } from '../src/core/time.js';
-import { LinkSigner, randomCode } from '../src/core/tokens.js';
 
 const TZ = 'Europe/Moscow';
 const msk = (s: string) => parseDateTime(s, TZ)!;
@@ -74,42 +73,6 @@ describe('WorkCalendar', () => {
     expect(cal.workingDaysBetween(msk('2026-09-28 10:00'), msk('2026-10-02 10:00'))).toBe(4);
     expect(cal.workingDaysBetween(msk('2026-09-28 10:00'), msk('2026-09-28 18:00'))).toBe(0);
     expect(cal.workingDaysBetween(msk('2026-09-28 10:00'), msk('2026-09-27 10:00'))).toBe(0);
-  });
-});
-
-describe('LinkSigner', () => {
-  const signer = new LinkSigner('x'.repeat(40));
-  const now = new Date('2026-09-28T10:00:00Z');
-  const later = new Date('2026-10-10T10:00:00Z');
-
-  it('проверяет свою подпись и роль', () => {
-    const t = signer.sign('R-0007', 'requester', later);
-    expect(signer.verify('R-0007', t, now)).toBe('requester');
-    const e = signer.sign('R-0007', 'editor', later);
-    expect(signer.verify('R-0007', e, now)).toBe('editor');
-  });
-
-  it('не пускает по ссылке от другой заявки, с другой ролью или после срока', () => {
-    const t = signer.sign('R-0007', 'requester', later);
-    expect(signer.verify('R-0008', t, now)).toBeNull();
-    expect(signer.verify('R-0007', `e${t.slice(1)}`, now)).toBeNull();
-    expect(signer.verify('R-0007', t, new Date('2026-10-11T00:00:00Z'))).toBeNull();
-    expect(signer.verify('R-0007', 'мусор', now)).toBeNull();
-  });
-
-  it('не принимает подпись с другим секретом', () => {
-    const other = new LinkSigner('y'.repeat(40));
-    expect(signer.verify('R-0007', other.sign('R-0007', 'requester', later), now)).toBeNull();
-  });
-
-  it('требует длинный секрет', () => {
-    expect(() => new LinkSigner('короткий')).toThrow();
-  });
-
-  it('делает коды приглашений, годные для deep link', () => {
-    const code = randomCode();
-    expect(code).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(randomCode()).not.toBe(code);
   });
 });
 
