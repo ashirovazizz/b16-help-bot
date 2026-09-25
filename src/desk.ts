@@ -6,19 +6,30 @@ import { UserError } from './core/errors.js';
 import type { Logger } from './core/logger.js';
 import { type Clock, systemClock } from './core/time.js';
 import { buildDigest } from './digest.js';
-import { PROCESSES, processById } from './processes.js';
+import { GROUPS, PROCESSES, type ProcessDef, processById } from './processes.js';
 import {
+  answersText,
   cardKeyboard,
   cardText,
   displayName,
   draftKeyboard,
   HELP,
   menuKeyboard,
+  questionKeyboard,
   STATUS_LABELS,
+  summaryKeyboard,
+  summaryText,
   thread,
   when,
 } from './render.js';
-import { type Binding, OPEN_STATUSES, type Status, type Store, type Ticket } from './store.js';
+import {
+  type Binding,
+  type Draft,
+  OPEN_STATUSES,
+  type Status,
+  type Store,
+  type Ticket,
+} from './store.js';
 
 export interface DeskConfig {
   /** Код для /setup; без него тему задают только через .env */
@@ -28,7 +39,7 @@ export interface DeskConfig {
   tz: string;
   slaDays: number;
   holidays: string[];
-  /** Привязки из .env важнее заданных командой /setup */
+  /** Привязки групп из .env важнее заданных командой /setup */
   envBindings: Record<string, Binding>;
 }
 
@@ -49,9 +60,12 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
+const isImage = (msg: Message) => !!msg.photo || !!msg.document?.mime_type?.startsWith('image/');
+
 /**
- * Стол заявок: сотрудник собирает заявку в личке, бот кладёт её карточкой
- * в тему рабочего чата и пересылает ответы в обе стороны.
+ * Стол заявок: сотрудник собирает заявку в личке (свободным текстом или
+ * по анкете), бот кладёт её карточкой в тему рабочего чата и пересылает
+ * ответы в обе стороны.
  */
 export class Desk {
   private readonly members = new Map<number, { ok: boolean; at: number }>();
@@ -70,21 +84,25 @@ export class Desk {
 
   /* ───── настройка ───── */
 
-  binding(processId: string): Binding | undefined {
-    return this.cfg.envBindings[processId] ?? this.store.state.bindings[processId];
+  binding(group: string): Binding | undefined {
+    return this.cfg.envBindings[group] ?? this.store.state.bindings[group];
+  }
+
+  bindingOf(p: ProcessDef): Binding | undefined {
+    return this.binding(p.group);
   }
 
   get configured(): boolean {
-    return PROCESSES.some((p) => this.binding(p.id));
+    return Object.keys(GROUPS).some((g) => this.binding(g));
   }
 
   isOpsChat(chatId: number): boolean {
-    return PROCESSES.some((p) => this.binding(p.id)?.chatId === chatId);
+    return Object.keys(GROUPS).some((g) => this.binding(g)?.chatId === chatId);
   }
 
-  /** /setup КОД [процесс] — привязать процесс к теме, где отправлена команда. */
+  /** /setup КОД [группа] — заявки группы будут приходить в тему, где отправлена команда. */
   async setup(msg: Message, args: string[]): Promise<string> {
-    const [code = '', processId = 'site'] = args;
+    const [code = '', group = 'site'] = args;
     if (!this.cfg.setupCode) {
       return 'Настройка командой выключена: на сервере задан OPS_CHAT_ID в .env.';
     }
@@ -94,18 +112,18 @@ export class Desk {
     if (!safeEqual(code, this.cfg.setupCode)) {
       return 'Код не подошёл. Его показал установщик на сервере (строка SETUP_CODE в файле .env).';
     }
-    const p = processById(processId);
-    if (!p) return `Нет процесса «${processId}». Есть: ${PROCESSES.map((x) => x.id).join(', ')}.`;
+    const title = GROUPS[group];
+    if (!title) return `Нет раздела «${group}». Есть: ${Object.keys(GROUPS).join(', ')}.`;
     const b: Binding = {
       chatId: msg.chat.id,
       ...(msg.message_thread_id !== undefined ? { threadId: msg.message_thread_id } : {}),
     };
     await this.store.update((s) => {
-      s.bindings[p.id] = b;
+      s.bindings[group] = b;
     });
     this.members.clear();
-    this.log.info('Процесс привязан к теме', { process: p.id, ...b });
-    return `Готово: заявки «${p.title}» будут приходить сюда. Проверьте — напишите боту в личку /start.`;
+    this.log.info('Раздел привязан к теме', { group, ...b });
+    return `Готово: заявки раздела «${title}» будут приходить сюда. Проверьте — напишите боту в личку /start.`;
   }
 
   /* ───── доступ ───── */
@@ -113,7 +131,7 @@ export class Desk {
   /** Писать боту могут участники рабочего чата. Если Telegram не ответил, пускаем и пишем в журнал. */
   async canUse(userId: number): Promise<boolean> {
     if (this.cfg.access === 'anyone') return true;
-    const chats = [...new Set(PROCESSES.map((p) => this.binding(p.id)?.chatId))].filter(
+    const chats = [...new Set(Object.keys(GROUPS).map((g) => this.binding(g)?.chatId))].filter(
       (c): c is number => c !== undefined,
     );
     if (!chats.length) return false;
@@ -143,36 +161,22 @@ export class Desk {
     return ok;
   }
 
-  /* ───── сотрудник ───── */
+  /* ───── сотрудник: черновик ───── */
 
   async menu(chatId: number, greeting?: string): Promise<void> {
     await this.api.sendMessage(
       chatId,
-      greeting ? `${greeting}\n\n${HELP}` : 'Выберите, с чем нужна помощь:',
-      {
-        reply_markup: menuKeyboard((id) => !!this.binding(id)),
-      },
+      greeting ? `${greeting}\n\n${HELP}` : 'Выберите, что нужно сделать:',
+      { reply_markup: menuKeyboard((p) => !!this.bindingOf(p)) },
     );
   }
 
-  async startDraft(user: User, processId: string): Promise<void> {
-    const p = processById(processId);
-    if (!p || !this.binding(p.id)) throw new UserError('Этот раздел пока не настроен.');
-    const prompt = await this.api.sendMessage(user.id, p.intro, { reply_markup: draftKeyboard });
-    const old = this.store.state.drafts[String(user.id)];
-    await this.store.update((s) => {
-      s.drafts[String(user.id)] = {
-        process: p.id,
-        messages: [],
-        promptId: prompt.message_id,
-        startedAt: this.now(),
-      };
-    });
-    if (old?.promptId) await this.api.editMessageReplyMarkup(user.id, old.promptId).catch(() => {});
+  private draftOf(userId: number): Draft | undefined {
+    return this.store.state.drafts[String(userId)];
   }
 
   hasDraft(userId: number): boolean {
-    return !!this.store.state.drafts[String(userId)];
+    return !!this.draftOf(userId);
   }
 
   /** Сотрудник ответил на сообщение бота по конкретной заявке. */
@@ -181,15 +185,142 @@ export class Desk {
     return !!replyTo && !!this.store.ticketByUserMessage(msg.chat.id, replyTo.message_id);
   }
 
-  async addToDraft(userId: number, messageId: number): Promise<void> {
+  /** Убирает кнопки у прошлой подсказки и запоминает новую. */
+  private async setPrompt(userId: number, promptId: number): Promise<void> {
+    const old = this.draftOf(userId)?.promptId;
     await this.store.update((s) => {
-      s.drafts[String(userId)]?.messages.push(messageId);
+      const d = s.drafts[String(userId)];
+      if (d) d.promptId = promptId;
     });
-    await this.react(userId, messageId);
+    if (old && old !== promptId) {
+      await this.api.editMessageReplyMarkup(userId, old).catch(() => {});
+    }
+  }
+
+  async startDraft(user: User, processId: string): Promise<void> {
+    const p = processById(processId);
+    if (!p || !this.bindingOf(p)) throw new UserError('Этот раздел пока не настроен.');
+    const old = this.draftOf(user.id);
+    if (old?.promptId) await this.api.editMessageReplyMarkup(user.id, old.promptId).catch(() => {});
+    const guided = !!p.questions?.length;
+    const intro = await this.api.sendMessage(
+      user.id,
+      p.intro,
+      guided ? {} : { reply_markup: draftKeyboard },
+    );
+    await this.store.update((s) => {
+      s.drafts[String(user.id)] = {
+        process: p.id,
+        messages: [],
+        promptId: intro.message_id,
+        startedAt: this.now(),
+        ...(guided ? { step: 0, answers: {} } : {}),
+      };
+    });
+    if (guided) await this.ask(user.id, p, 0);
+  }
+
+  /** Следующий вопрос анкеты или итог, если вопросы кончились. */
+  private async ask(userId: number, p: ProcessDef, step: number): Promise<void> {
+    const questions = p.questions ?? [];
+    const q = questions[step];
+    if (!q) {
+      const answers = this.draftOf(userId)?.answers ?? {};
+      const summary = await this.api.sendMessage(userId, summaryText(p, answers), {
+        reply_markup: summaryKeyboard,
+      });
+      await this.setPrompt(userId, summary.message_id);
+      return;
+    }
+    const hint = q.optional ? ' (можно пропустить)' : '';
+    const m = await this.api.sendMessage(
+      userId,
+      `${step + 1}/${questions.length}. ${q.ask}${hint}`,
+      {
+        reply_markup: questionKeyboard(!!q.optional),
+      },
+    );
+    await this.setPrompt(userId, m.message_id);
+  }
+
+  /** Сообщение сотрудника в черновик: ответ на вопрос анкеты или часть свободной заявки. */
+  async addToDraft(msg: Message): Promise<void> {
+    const userId = msg.chat.id;
+    const d = this.draftOf(userId);
+    if (!d) return;
+    const p = processById(d.process);
+    if (!p?.questions?.length || d.step === undefined) {
+      await this.store.update((s) => {
+        s.drafts[String(userId)]?.messages.push(msg.message_id);
+      });
+      await this.react(userId, msg.message_id);
+      return;
+    }
+
+    const q = p.questions[d.step];
+    if (!q) {
+      await this.api.sendMessage(
+        userId,
+        'Анкета уже заполнена: нажмите «Отправить заявку» или «Заполнить заново».',
+      );
+      return;
+    }
+    if (q.kind === 'text' && msg.text === undefined) {
+      await this.api.sendMessage(userId, 'Здесь нужен текст — напишите ответ сообщением.');
+      return;
+    }
+    if (q.kind === 'photo' && !isImage(msg)) {
+      await this.api.sendMessage(userId, 'Пришлите фото — картинкой или файлом.');
+      return;
+    }
+    const next = d.step + 1;
+    await this.store.update((s) => {
+      const draft = s.drafts[String(userId)];
+      if (!draft) return;
+      draft.answers = {
+        ...draft.answers,
+        [q.key]: {
+          messageId: msg.message_id,
+          ...(msg.text !== undefined ? { text: msg.text } : {}),
+        },
+      };
+      draft.step = next;
+    });
+    await this.react(userId, msg.message_id);
+    await this.ask(userId, p, next);
+  }
+
+  async skip(userId: number): Promise<void> {
+    const d = this.draftOf(userId);
+    const p = d && processById(d.process);
+    const q = p?.questions?.[d?.step ?? -1];
+    if (!d || !p || !q) throw new UserError('Сейчас нечего пропускать.');
+    if (!q.optional) throw new UserError('Этот вопрос обязательный.');
+    const next = (d.step ?? 0) + 1;
+    await this.store.update((s) => {
+      const draft = s.drafts[String(userId)];
+      if (draft) draft.step = next;
+    });
+    await this.ask(userId, p, next);
+  }
+
+  async restart(userId: number): Promise<void> {
+    const d = this.draftOf(userId);
+    const p = d && processById(d.process);
+    if (!d || !p?.questions?.length)
+      throw new UserError('Заявка не начата. Выберите раздел в меню: /start');
+    await this.store.update((s) => {
+      const draft = s.drafts[String(userId)];
+      if (draft) {
+        draft.step = 0;
+        draft.answers = {};
+      }
+    });
+    await this.ask(userId, p, 0);
   }
 
   async cancelDraft(userId: number): Promise<void> {
-    const d = this.store.state.drafts[String(userId)];
+    const d = this.draftOf(userId);
     await this.store.update((s) => {
       delete s.drafts[String(userId)];
     });
@@ -198,15 +329,22 @@ export class Desk {
     }
   }
 
-  /** Отправка черновика: карточка и копии сообщений — в тему, заявителю — номер заявки. */
+  /* ───── сотрудник: отправка ───── */
+
+  /** Карточка и содержимое заявки — в тему, заявителю — номер заявки. */
   async submit(user: User): Promise<Ticket> {
-    const d = this.store.state.drafts[String(user.id)];
+    const d = this.draftOf(user.id);
     if (!d) throw new UserError('Заявка не начата. Выберите раздел в меню: /start');
-    if (!d.messages.length)
-      throw new UserError('Сначала напишите, что нужно, — хотя бы одно сообщение.');
     const p = processById(d.process);
-    const b = p && this.binding(p.id);
+    const b = p && this.bindingOf(p);
     if (!p || !b) throw new UserError('Этот раздел пока не настроен.');
+    const guided = !!p.questions?.length;
+    if (guided && (d.step ?? 0) < (p.questions?.length ?? 0)) {
+      throw new UserError('Сначала ответьте на все вопросы анкеты.');
+    }
+    if (!guided && !d.messages.length) {
+      throw new UserError('Сначала напишите, что нужно, — хотя бы одно сообщение.');
+    }
 
     const id = await this.store.update((s) => ++s.seq);
     const now = this.now();
@@ -234,18 +372,22 @@ export class Desk {
     t.cardId = card.message_id;
     t.opsMessages.push(card.message_id);
 
-    const copies = await this.copyAll(user.id, d.messages, b);
-    t.opsMessages.push(...copies.ids);
-    if (copies.failed) {
-      const warn = await this.api.sendMessage(
-        b.chatId,
-        `⚠️ ${copies.failed} сообщ. из заявки №${id} Telegram не дал переслать — уточните у заявителя.`,
-        {
-          ...thread(b),
-          reply_parameters: { message_id: t.cardId, allow_sending_without_reply: true },
-        },
-      );
-      t.opsMessages.push(warn.message_id);
+    if (guided) {
+      t.opsMessages.push(...(await this.sendAnswers(user.id, p, d, b, t.cardId)));
+    } else {
+      const copies = await this.copyAll(user.id, d.messages, b);
+      t.opsMessages.push(...copies.ids);
+      if (copies.failed) {
+        const warn = await this.api.sendMessage(
+          b.chatId,
+          `⚠️ ${copies.failed} сообщ. из заявки №${id} Telegram не дал переслать — уточните у заявителя.`,
+          {
+            ...thread(b),
+            reply_parameters: { message_id: t.cardId, allow_sending_without_reply: true },
+          },
+        );
+        t.opsMessages.push(warn.message_id);
+      }
     }
 
     const note = await this.api.sendMessage(
@@ -261,6 +403,49 @@ export class Desk {
     if (d.promptId) await this.api.editMessageReplyMarkup(user.id, d.promptId).catch(() => {});
     this.log.info('Новая заявка', { ticket: id, process: p.id });
     return t;
+  }
+
+  /** Анкета для редактора: одно сообщение с подписанными полями и фото отдельно. */
+  private async sendAnswers(
+    from: number,
+    p: ProcessDef,
+    d: Draft,
+    b: Binding,
+    cardId: number,
+  ): Promise<number[]> {
+    const ids: number[] = [];
+    const answers = d.answers ?? {};
+    const reply = { reply_parameters: { message_id: cardId, allow_sending_without_reply: true } };
+    for (const chunk of answersText(p, answers)) {
+      const m = await this.api.sendMessage(b.chatId, chunk, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...thread(b),
+        ...reply,
+      });
+      ids.push(m.message_id);
+    }
+    for (const q of p.questions ?? []) {
+      const a = answers[q.key];
+      if (q.kind !== 'photo' || !a) continue;
+      try {
+        const copy = await this.api.copyMessage(b.chatId, from, a.messageId, {
+          ...thread(b),
+          ...reply,
+          caption: `${q.label} для страницы`,
+        });
+        ids.push(copy.message_id);
+      } catch (error) {
+        this.log.warn('Не удалось переслать фото из анкеты', { error });
+        const warn = await this.api.sendMessage(
+          b.chatId,
+          '⚠️ Фото из анкеты Telegram не дал переслать — попросите прислать ещё раз.',
+          { ...thread(b), ...reply },
+        );
+        ids.push(warn.message_id);
+      }
+    }
+    return ids;
   }
 
   private async copyAll(from: number, ids: number[], b: Binding) {
@@ -393,7 +578,7 @@ export class Desk {
 
   /**
    * Сообщение заявителя в личке уходит в ветку его заявки: той, на чьё
-   * сообщение он ответил, иначе — последней открытой.
+   * сообщение он ответил, иначе — открытой заявке с последней перепиской.
    */
   async relayFromUser(msg: Message): Promise<Ticket | undefined> {
     const userId = msg.chat.id;
@@ -457,12 +642,13 @@ export class Desk {
     const calendar = new WorkCalendar(this.cfg.tz, this.cfg.holidays);
     if (!calendar.isWorkingDay(now)) return 0;
     let sent = 0;
-    for (const p of PROCESSES) {
-      const b = this.binding(p.id);
+    for (const [group, title] of Object.entries(GROUPS)) {
+      const b = this.binding(group);
       if (!b) continue;
+      const inGroup = new Set(PROCESSES.filter((p) => p.group === group).map((p) => p.id));
       const text = buildDigest({
-        tickets: this.store.state.tickets.filter((t) => t.process === p.id),
-        process: p,
+        tickets: this.store.state.tickets.filter((t) => inGroup.has(t.process)),
+        title,
         now,
         calendar,
         slaDays: this.cfg.slaDays,

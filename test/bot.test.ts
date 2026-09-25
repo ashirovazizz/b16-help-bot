@@ -50,7 +50,11 @@ describe('доступ', () => {
     await h.handle(h.privateText(ivan, '/start'));
     const menu = h.sent('sendMessage', (p) => p.chat_id === ivan.id).at(-1)!;
     expect(String(menu.payload.text)).toContain('Здравствуйте, Иван!');
-    expect(buttonsOf(menu.payload).map((b) => b.callback_data)).toEqual(['p:site', 'm:list']);
+    expect(buttonsOf(menu.payload).map((b) => b.callback_data)).toEqual([
+      'p:site',
+      'p:site_new',
+      'm:list',
+    ]);
   });
 
   it('если Telegram не дал проверить участника, пускает', async () => {
@@ -83,7 +87,7 @@ describe('заявка', () => {
     const card = h.sent('sendMessage', (p) => p.chat_id === OPS)[0]!;
     expect(card.payload.message_thread_id).toBe(TOPIC);
     expect(card.payload.parse_mode).toBe('HTML');
-    expect(String(card.payload.text)).toContain('<b>Заявка №1</b> · Страница на сайте');
+    expect(String(card.payload.text)).toContain('<b>Заявка №1</b> · Изменение страницы на сайте');
     expect(String(card.payload.text)).toContain('Иван Петров');
     expect(buttonsOf(card.payload).map((b) => b.callback_data)).toEqual([
       't:take:1',
@@ -126,7 +130,7 @@ describe('заявка', () => {
     const h = harness();
     await h.submitTicket(ivan);
     await h.handle(h.callback(ivan, 'm:list'));
-    expect(h.lastText(ivan.id)).toMatch(/№1 · Страница на сайте · 🆕 новая/);
+    expect(h.lastText(ivan.id)).toMatch(/№1 · Изменение страницы на сайте · 🆕 новая/);
   });
 });
 
@@ -245,7 +249,7 @@ describe('переписка по заявке', () => {
   it('без открытых заявок сообщение показывает меню', async () => {
     const h = harness();
     await h.handle(h.privateText(olga, 'привет'));
-    expect(h.lastText(olga.id)).toContain('Выберите, с чем нужна помощь');
+    expect(h.lastText(olga.id)).toContain('Выберите, что нужно сделать');
   });
 
   it('после закрытия переписка продолжается с пометкой', async () => {

@@ -192,6 +192,23 @@ export function harness(opts: HarnessOptions = {}) {
         },
       } as unknown as Update;
     },
+    privateDocument(from: User, mimeType: string, fileName = 'file'): Update {
+      return {
+        update_id: updateId++,
+        message: {
+          message_id: msgId++,
+          date: 0,
+          chat: privateChat(from),
+          from,
+          document: {
+            file_id: 'd',
+            file_unique_id: 'du',
+            mime_type: mimeType,
+            file_name: fileName,
+          },
+        },
+      } as unknown as Update;
+    },
     callback(from: User, data: string, chat: 'private' | 'ops' = 'private', messageId = 1): Update {
       const c = chat === 'private' ? privateChat(from) : groupChat;
       return {

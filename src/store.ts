@@ -31,15 +31,26 @@ export interface Ticket {
   userMessages: number[];
 }
 
+/** Ответ на вопрос анкеты. */
+export interface Answer {
+  text?: string;
+  messageId: number;
+}
+
 /** Заявка, которую сотрудник ещё собирает. */
 export interface Draft {
   process: string;
+  /** Свободная заявка: сообщения сотрудника */
   messages: number[];
+  /** Последнее сообщение бота с кнопками черновика */
   promptId?: number;
   startedAt: string;
+  /** Анкета: номер текущего вопроса и ответы */
+  step?: number;
+  answers?: Record<string, Answer>;
 }
 
-/** Куда падают заявки процесса. */
+/** Куда падают заявки группы процессов. */
 export interface Binding {
   chatId: number;
   threadId?: number;

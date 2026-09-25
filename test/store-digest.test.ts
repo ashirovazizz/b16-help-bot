@@ -5,11 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { holidaysOf, loadConfig } from '../src/config.js';
 import { WorkCalendar } from '../src/core/calendar.js';
 import { buildDigest } from '../src/digest.js';
-import { PROCESSES } from '../src/processes.js';
 import { Store, type Ticket } from '../src/store.js';
 import { at, harness, ivan, OPS, TZ } from './harness.js';
 
-const site = PROCESSES[0]!;
+const title = 'Страницы на сайте';
 
 const ticket = (patch: Partial<Ticket>): Ticket => ({
   id: 1,
@@ -73,15 +72,15 @@ describe('сводка', () => {
         }),
         ticket({ id: 3, status: 'done' }),
       ],
-      process: site,
+      title,
       now: at('2026-09-29 10:00'),
       calendar: cal,
       slaDays: 3,
     })!;
-    expect(text).toContain('Страница на сайте</b>: открытые заявки на 29.09');
+    expect(text).toContain('Страницы на сайте</b>: открытые заявки на 29.09');
     expect(text).toContain('Никто не взял — 1');
     expect(text).toContain(
-      '<a href="https://t.me/c/1234567890/5000">№1</a> Иван Петров · ждёт 1 р. д. ⚠️',
+      '<a href="https://t.me/c/1234567890/5000">№1</a> Иван Петров · изменение · ждёт 1 р. д. ⚠️',
     );
     expect(text).toContain('В работе — 1');
     expect(text).toContain('ведёт Вика · 5 р. д. ⚠️');
@@ -92,7 +91,7 @@ describe('сводка', () => {
     expect(
       buildDigest({
         tickets: [ticket({ status: 'done' })],
-        process: site,
+        title,
         now: new Date(),
         calendar: cal,
         slaDays: 3,

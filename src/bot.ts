@@ -116,6 +116,20 @@ export function registerHandlers(
     }),
   );
 
+  priv.callbackQuery('d:skip', (ctx) =>
+    guard(ctx, async () => {
+      await desk.skip(ctx.from.id);
+      await ctx.answerCallbackQuery();
+    }),
+  );
+
+  priv.callbackQuery('d:restart', (ctx) =>
+    guard(ctx, async () => {
+      await desk.restart(ctx.from.id);
+      await ctx.answerCallbackQuery();
+    }),
+  );
+
   priv.callbackQuery('d:cancel', async (ctx) => {
     await desk.cancelDraft(ctx.from.id);
     await ctx.answerCallbackQuery({ text: 'Отменено' });
@@ -130,7 +144,7 @@ export function registerHandlers(
   priv.on('message', async (ctx) => {
     if (!(await allowed(ctx))) return;
     if (!desk.isTicketReply(ctx.msg) && desk.hasDraft(ctx.from.id)) {
-      await desk.addToDraft(ctx.from.id, ctx.msg.message_id);
+      await desk.addToDraft(ctx.msg);
       return;
     }
     const t = await desk.relayFromUser(ctx.msg);
