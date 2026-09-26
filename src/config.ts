@@ -16,7 +16,6 @@ const schema = z.object({
   /** Можно задать тему вручную вместо /setup */
   OPS_CHAT_ID: optionalInt,
   SITE_TOPIC_ID: optionalInt,
-  ACCESS: z.preprocess(blank, z.enum(['chat_members', 'anyone']).default('chat_members')),
   /** Время утренней сводки «ЧЧ:ММ» или off */
   DIGEST_TIME: z.preprocess(
     blank,

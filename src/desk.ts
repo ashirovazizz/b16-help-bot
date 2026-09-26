@@ -34,8 +34,6 @@ import {
 export interface DeskConfig {
   /** Код для /setup; без него тему задают только через .env */
   setupCode?: string;
-  /** Кто может писать боту: только участники рабочего чата или все */
-  access: 'chat_members' | 'anyone';
   tz: string;
   slaDays: number;
   holidays: string[];
@@ -52,8 +50,6 @@ const ACTIONS: Record<EditorAction, { from: Status[]; to: Status }> = {
   reopen: { from: ['done', 'rejected'], to: 'in_work' },
 };
 
-const MEMBER_CACHE_MS = 10 * 60 * 1000;
-
 function safeEqual(a: string, b: string): boolean {
   const x = Buffer.from(a);
   const y = Buffer.from(b);
@@ -68,8 +64,6 @@ const isImage = (msg: Message) => !!msg.photo || !!msg.document?.mime_type?.star
  * ответы в обе стороны.
  */
 export class Desk {
-  private readonly members = new Map<number, { ok: boolean; at: number }>();
-
   constructor(
     private readonly api: Api,
     private readonly store: Store,
@@ -121,44 +115,8 @@ export class Desk {
     await this.store.update((s) => {
       s.bindings[group] = b;
     });
-    this.members.clear();
     this.log.info('Раздел привязан к теме', { group, ...b });
     return `Готово: заявки раздела «${title}» будут приходить сюда. Проверьте — напишите боту в личку /start.`;
-  }
-
-  /* ───── доступ ───── */
-
-  /** Писать боту могут участники рабочего чата. Если Telegram не ответил, пускаем и пишем в журнал. */
-  async canUse(userId: number): Promise<boolean> {
-    if (this.cfg.access === 'anyone') return true;
-    const chats = [...new Set(Object.keys(GROUPS).map((g) => this.binding(g)?.chatId))].filter(
-      (c): c is number => c !== undefined,
-    );
-    if (!chats.length) return false;
-    const cached = this.members.get(userId);
-    const nowMs = this.clock.now().getTime();
-    if (cached && nowMs - cached.at < MEMBER_CACHE_MS) return cached.ok;
-    let ok = false;
-    for (const chatId of chats) {
-      try {
-        const m = await this.api.getChatMember(chatId, userId);
-        if (
-          m.status === 'creator' ||
-          m.status === 'administrator' ||
-          m.status === 'member' ||
-          (m.status === 'restricted' && m.is_member)
-        ) {
-          ok = true;
-          break;
-        }
-      } catch (error) {
-        this.log.warn('Не удалось проверить участника рабочего чата', { userId, error });
-        ok = true;
-        break;
-      }
-    }
-    this.members.set(userId, { ok, at: nowMs });
-    return ok;
   }
 
   /* ───── сотрудник: черновик ───── */

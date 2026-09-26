@@ -46,7 +46,6 @@ const desk = new Desk(
   store,
   {
     ...(config.SETUP_CODE ? { setupCode: config.SETUP_CODE } : {}),
-    access: config.ACCESS,
     tz: config.TIMEZONE,
     slaDays: config.SLA_DAYS,
     holidays: holidaysOf(config),

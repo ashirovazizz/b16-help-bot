@@ -10,8 +10,6 @@ export interface HandlerOptions {
 
 const NOT_CONFIGURED =
   'Бот ещё не настроен: администратору нужно выбрать тему для заявок командой /setup в рабочем чате.';
-const NO_ACCESS =
-  'Бот работает для сотрудников DH-центра. Если вы из команды, попросите добавить вас в рабочий чат.';
 
 function inThread(ctx: Context) {
   const id = ctx.msg?.message_thread_id;
@@ -86,10 +84,6 @@ export function registerHandlers(
   const allowed = async (ctx: Context & { from: { id: number } }) => {
     if (!desk.configured) {
       await ctx.reply(NOT_CONFIGURED);
-      return false;
-    }
-    if (!(await desk.canUse(ctx.from.id))) {
-      await ctx.reply(NO_ACCESS);
       return false;
     }
     return true;

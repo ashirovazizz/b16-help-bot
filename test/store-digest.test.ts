@@ -49,7 +49,7 @@ describe('хранилище', () => {
   });
 
   it('номера заявок не повторяются при одновременной отправке', async () => {
-    const h = harness({ access: 'anyone' });
+    const h = harness();
     const oleg = { id: 777, is_bot: false, first_name: 'Олег' };
     await Promise.all([h.submitTicket(ivan, 'раз'), h.submitTicket(oleg, 'два')]);
     expect(h.store.state.tickets.map((t) => t.id).sort()).toEqual([1, 2]);
@@ -116,7 +116,6 @@ describe('настройки', () => {
   it('хватает одного токена, остальное — по умолчанию', () => {
     const c = loadConfig({ ...base, OPS_CHAT_ID: '', HOLIDAYS: '2026-11-04, 2026-12-31, ерунда' });
     expect(c).toMatchObject({
-      ACCESS: 'chat_members',
       DIGEST_TIME: '10:00',
       SLA_DAYS: 3,
       DATA_DIR: './data',

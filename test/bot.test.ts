@@ -42,32 +42,20 @@ describe('настройка', () => {
 });
 
 describe('доступ', () => {
-  it('пускает участников рабочего чата и не пускает посторонних', async () => {
+  it('ботом пользуется любой, кто ему написал, без проверки чатов', async () => {
     const h = harness();
     await h.handle(h.privateText(stranger, '/start'));
-    expect(h.lastText(stranger.id)).toContain('для сотрудников DH-центра');
-
-    await h.handle(h.privateText(ivan, '/start'));
-    const menu = h.sent('sendMessage', (p) => p.chat_id === ivan.id).at(-1)!;
-    expect(String(menu.payload.text)).toContain('Здравствуйте, Иван!');
+    const menu = h.sent('sendMessage', (p) => p.chat_id === stranger.id).at(-1)!;
+    expect(String(menu.payload.text)).toContain('Здравствуйте, Кто-то!');
     expect(buttonsOf(menu.payload).map((b) => b.callback_data)).toEqual([
       'p:site',
       'p:site_new',
       'm:list',
     ]);
-  });
-
-  it('если Telegram не дал проверить участника, пускает', async () => {
-    const h = harness({ memberCheckFails: true });
-    await h.handle(h.privateText(stranger, '/start'));
-    expect(h.lastText(stranger.id)).toContain('Здравствуйте');
-  });
-
-  it('в режиме «все» не проверяет участие', async () => {
-    const h = harness({ access: 'anyone' });
-    await h.handle(h.privateText(stranger, '/start'));
     expect(h.sent('getChatMember')).toHaveLength(0);
-    expect(h.lastText(stranger.id)).toContain('Здравствуйте');
+
+    const id = await h.submitTicket(stranger, 'хочу страницу');
+    expect(h.store.ticket(id)).toMatchObject({ userId: stranger.id, status: 'new' });
   });
 });
 

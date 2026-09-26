@@ -56,6 +56,8 @@ if ! grep -q '^SETUP_CODE=..*' .env; then
   set_env SETUP_CODE "$(tr -dc 'a-z0-9' < /dev/urandom | head -c 10 || true)"
 fi
 CODE="$(grep '^SETUP_CODE=' .env | cut -d= -f2-)"
+# настройки прошлых версий, которые больше не нужны
+sed -i '/^# Кто может писать боту/d; /^ACCESS=/d' .env
 
 # 4. Если Docker Hub недоступен — берём базовый образ из зеркала
 if ! grep -q '^NODE_IMAGE=' .env && ! docker pull -q node:22-alpine >/dev/null 2>&1; then

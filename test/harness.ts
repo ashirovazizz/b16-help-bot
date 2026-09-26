@@ -3,7 +3,7 @@ import type { Update, User, UserFromGetMe } from 'grammy/types';
 import { registerHandlers } from '../src/bot.js';
 import { silentLogger } from '../src/core/logger.js';
 import { type Clock, parseDateTime } from '../src/core/time.js';
-import { Desk, type DeskConfig } from '../src/desk.js';
+import { Desk } from '../src/desk.js';
 import { Store } from '../src/store.js';
 
 export const TZ = 'Europe/Moscow';
@@ -56,10 +56,6 @@ export interface Call {
 
 export interface HarnessOptions {
   bound?: boolean;
-  access?: DeskConfig['access'];
-  /** Статусы участников рабочего чата; остальных Telegram считает вышедшими */
-  members?: Record<number, string>;
-  memberCheckFails?: boolean;
   failCopyMessages?: boolean;
   store?: Store;
   setupCode?: string | null;
@@ -70,11 +66,6 @@ export function harness(opts: HarnessOptions = {}) {
   const calls: Call[] = [];
   const alerts: string[] = [];
   let nextId = 5000;
-  const members = opts.members ?? {
-    [ivan.id]: 'member',
-    [olga.id]: 'member',
-    [vika.id]: 'administrator',
-  };
 
   bot.api.config.use(async (_prev, method, payload) => {
     const p = (payload ?? {}) as Record<string, unknown>;
@@ -98,16 +89,6 @@ export function harness(opts: HarnessOptions = {}) {
         } as never;
       }
       result = (p.message_ids as number[]).map(() => ({ message_id: nextId++ }));
-    } else if (method === 'getChatMember') {
-      if (opts.memberCheckFails) {
-        return {
-          ok: false,
-          error_code: 400,
-          description: 'Bad Request: member list is inaccessible',
-        } as never;
-      }
-      const status = members[p.user_id as number] ?? 'left';
-      result = { status, user: { id: p.user_id, is_bot: false, first_name: 'x' } };
     }
     return { ok: true, result } as never;
   });
@@ -124,7 +105,6 @@ export function harness(opts: HarnessOptions = {}) {
     store,
     {
       ...(setupCode ? { setupCode } : {}),
-      access: opts.access ?? 'chat_members',
       tz: TZ,
       slaDays: 3,
       holidays: [],
