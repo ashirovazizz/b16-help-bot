@@ -46,7 +46,12 @@ describe('доступ', () => {
     const h = harness();
     await h.handle(h.privateText(stranger, '/start'));
     const menu = h.sent('sendMessage', (p) => p.chat_id === stranger.id).at(-1)!;
-    expect(String(menu.payload.text)).toContain('Здравствуйте, Кто-то!');
+    expect(menu.payload.text).toBe(
+      'Здравствуйте, Кто-то!\n\n' +
+        'Я передаю ваши заявки коллегам по дх-центру, ответственным за разные направления, а ответы оттуда — вам.\n\n' +
+        'Выберите, с чем нужна помощь, опишите задачу одним или несколькими сообщениями и нажмите «Отправить заявку». ' +
+        'Когда редактор ответит, сообщение придёт сюда; чтобы ответить, просто напишите в этот чат.',
+    );
     expect(buttonsOf(menu.payload).map((b) => b.callback_data)).toEqual([
       'p:site',
       'p:site_new',
