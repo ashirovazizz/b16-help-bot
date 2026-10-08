@@ -44,7 +44,13 @@ export interface Draft {
   messages: number[];
   /** Последнее сообщение бота с кнопками черновика */
   promptId?: number;
+  /** Свободная заявка: подсказка «ещё не отправлено» под последним сообщением */
+  statusId?: number;
   startedAt: string;
+  /** Когда сотрудник последний раз что-то добавил */
+  lastAt?: string;
+  /** Напоминание о неотправленной заявке уже было */
+  reminded?: boolean;
   /** Анкета: номер текущего вопроса и ответы */
   step?: number;
   answers?: Record<string, Answer>;

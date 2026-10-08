@@ -72,6 +72,15 @@ if (config.DIGEST_TIME !== 'off') {
   );
 }
 
+// Напоминание о заявках, которые начали и не отправили
+const reminders = new Cron('*/5 * * * *', { protect: true }, async () => {
+  try {
+    await desk.remindDrafts();
+  } catch (error) {
+    log.error('Не удалось разослать напоминания о черновиках', { error });
+  }
+});
+
 await bot.api.setMyCommands(
   [
     { command: 'start', description: 'Меню' },
@@ -83,6 +92,7 @@ await bot.api.setMyCommands(
 const shutdown = async (signal: string) => {
   log.info('Остановка', { signal });
   digest?.stop();
+  reminders.stop();
   await bot.stop();
   process.exit(0);
 };

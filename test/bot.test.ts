@@ -70,11 +70,19 @@ describe('заявка', () => {
     await h.handle(h.callback(ivan, 'p:site'));
     const intro = h.sent('sendMessage', (p) => p.chat_id === ivan.id).at(-1)!;
     expect(buttonsOf(intro.payload).map((b) => b.callback_data)).toEqual(['d:send', 'd:cancel']);
+    const introId = h.store.state.drafts[ivan.id]!.promptId;
 
     await h.handle(h.privateText(ivan, 'Новая подпись: исследователь медиа'));
     await h.handle(h.privatePhoto(ivan, 'новое фото'));
-    expect(h.sent('setMessageReaction', (p) => p.chat_id === ivan.id)).toHaveLength(2);
     expect(h.store.state.drafts[ivan.id]?.messages).toHaveLength(2);
+
+    // кнопка отправки всегда под последним сообщением, а не только в подсказке сверху
+    const status = h.sent('sendMessage', (p) => p.chat_id === ivan.id).at(-1)!;
+    expect(String(status.payload.text)).toContain('В заявке сообщений: 2. Она ещё не отправлена');
+    expect(buttonsOf(status.payload).map((b) => b.callback_data)).toEqual(['d:send', 'd:cancel']);
+    // прошлая подсказка удалена, у вводной кнопки сняты
+    expect(h.sent('deleteMessage', (p) => p.chat_id === ivan.id)).toHaveLength(1);
+    expect(h.sent('editMessageReplyMarkup', (p) => p.message_id === introId)).toHaveLength(1);
 
     await h.handle(h.callback(ivan, 'd:send'));
     const card = h.sent('sendMessage', (p) => p.chat_id === OPS)[0]!;
@@ -100,6 +108,32 @@ describe('заявка', () => {
     expect(h.store.state.drafts[ivan.id]).toBeUndefined();
     expect(h.store.state.tickets[0]).toMatchObject({ id: 1, status: 'new', userId: ivan.id });
     expect(h.store.state.tickets[0]!.opsMessages).toHaveLength(3); // карточка + 2 копии
+  });
+
+  it('напоминает один раз о неотправленной заявке', async () => {
+    const h = harness();
+    await h.handle(h.callback(ivan, 'p:site'));
+    await h.handle(h.privateText(ivan, 'поменяйте фото'));
+    expect(await h.desk.remindDrafts()).toBe(0); // рано
+
+    h.clock.set('2026-09-28 10:31');
+    expect(await h.desk.remindDrafts()).toBe(1);
+    const note = h.sent('sendMessage', (p) => p.chat_id === ivan.id).at(-1)!;
+    expect(String(note.payload.text)).toContain('ещё не отправлена');
+    expect(buttonsOf(note.payload).map((b) => b.callback_data)).toContain('d:send');
+
+    h.clock.set('2026-09-28 12:00');
+    expect(await h.desk.remindDrafts()).toBe(0); // второй раз не пишет
+
+    await h.handle(h.callback(ivan, 'd:send'));
+    expect(h.store.state.tickets).toHaveLength(1);
+  });
+
+  it('не напоминает о пустом черновике', async () => {
+    const h = harness();
+    await h.handle(h.callback(ivan, 'p:site'));
+    h.clock.set('2026-09-28 12:00');
+    expect(await h.desk.remindDrafts()).toBe(0);
   });
 
   it('пустую заявку не отправляет, отмену принимает', async () => {

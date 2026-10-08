@@ -116,6 +116,14 @@ export const draftKeyboard = new InlineKeyboard()
   .text('📨 Отправить заявку', 'd:send')
   .text('✖️ Отменить', 'd:cancel');
 
+/** Под каждым сообщением свободной заявки: что собрано и что заявка ещё не ушла. */
+export function draftStatusText(count: number): string {
+  return (
+    `📝 В заявке сообщений: ${count}. Она ещё не отправлена.\n` +
+    'Допишите, если нужно, и нажмите «Отправить заявку».'
+  );
+}
+
 export function questionKeyboard(optional: boolean): InlineKeyboard {
   const kb = new InlineKeyboard();
   if (optional) kb.text('⏭ Пропустить', 'd:skip');

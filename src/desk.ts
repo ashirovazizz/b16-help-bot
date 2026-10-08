@@ -13,6 +13,7 @@ import {
   cardText,
   displayName,
   draftKeyboard,
+  draftStatusText,
   HELP,
   menuKeyboard,
   questionKeyboard,
@@ -208,10 +209,15 @@ export class Desk {
     if (!d) return;
     const p = processById(d.process);
     if (!p?.questions?.length || d.step === undefined) {
-      await this.store.update((s) => {
-        s.drafts[String(userId)]?.messages.push(msg.message_id);
+      const count = await this.store.update((s) => {
+        const draft = s.drafts[String(userId)];
+        if (!draft) return 0;
+        draft.messages.push(msg.message_id);
+        draft.lastAt = this.now();
+        draft.reminded = false;
+        return draft.messages.length;
       });
-      await this.react(userId, msg.message_id);
+      await this.showDraftStatus(userId, count);
       return;
     }
 
@@ -235,6 +241,8 @@ export class Desk {
     await this.store.update((s) => {
       const draft = s.drafts[String(userId)];
       if (!draft) return;
+      draft.lastAt = this.now();
+      draft.reminded = false;
       draft.answers = {
         ...draft.answers,
         [q.key]: {
@@ -246,6 +254,65 @@ export class Desk {
     });
     await this.react(userId, msg.message_id);
     await this.ask(userId, p, next);
+  }
+
+  /**
+   * Кнопка «Отправить заявку» всегда под последним сообщением сотрудника:
+   * иначе её не видно, и люди думают, что заявка уже ушла.
+   */
+  private async showDraftStatus(userId: number, count: number): Promise<void> {
+    const prev = this.draftOf(userId);
+    const old = { statusId: prev?.statusId, promptId: prev?.promptId };
+    const status = await this.api.sendMessage(userId, draftStatusText(count), {
+      reply_markup: draftKeyboard,
+    });
+    await this.store.update((s) => {
+      const draft = s.drafts[String(userId)];
+      if (!draft) return;
+      draft.promptId = status.message_id;
+      draft.statusId = status.message_id;
+    });
+    const { statusId, promptId } = old;
+    if (statusId) {
+      await this.api
+        .deleteMessage(userId, statusId)
+        .catch(() => this.api.editMessageReplyMarkup(userId, statusId).catch(() => {}));
+    } else if (promptId) {
+      await this.api.editMessageReplyMarkup(userId, promptId).catch(() => {});
+    }
+  }
+
+  /** Раз напоминает о заявке, которую начали и не отправили. Возвращает число напоминаний. */
+  async remindDrafts(afterMinutes = 30): Promise<number> {
+    const now = this.clock.now().getTime();
+    let sent = 0;
+    for (const [key, d] of Object.entries(this.store.state.drafts)) {
+      const userId = Number(key);
+      const p = processById(d.process);
+      if (!p || d.reminded) continue;
+      const guided = !!p.questions?.length;
+      const ready = guided ? (d.step ?? 0) >= (p.questions?.length ?? 0) : d.messages.length > 0;
+      if (!ready) continue;
+      const last = new Date(d.lastAt ?? d.startedAt).getTime();
+      if (now - last < afterMinutes * 60_000) continue;
+      try {
+        const m = await this.api.sendMessage(
+          userId,
+          '⏳ Ваша заявка ещё не отправлена: редактор её не видит. ' +
+            'Если всё написали, нажмите «Отправить заявку».',
+          { reply_markup: guided ? summaryKeyboard : draftKeyboard },
+        );
+        await this.setPrompt(userId, m.message_id);
+        sent++;
+      } catch (error) {
+        this.log.warn('Не удалось напомнить о черновике', { userId, error });
+      }
+      await this.store.update((s) => {
+        const draft = s.drafts[key];
+        if (draft) draft.reminded = true;
+      });
+    }
+    return sent;
   }
 
   async skip(userId: number): Promise<void> {
