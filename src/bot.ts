@@ -189,6 +189,12 @@ export function registerHandlers(
     }),
   );
 
+  bot.command('users', (ctx) =>
+    guard(ctx, async () => {
+      for (const part of mailer.users(ctx.msg)) await ctx.reply(part, inThread(ctx));
+    }),
+  );
+
   bot.callbackQuery(/^o:(send|cancel):(\d+)$/, async (ctx) => {
     const chatId = ctx.callbackQuery.message?.chat.id;
     if (chatId === undefined || !desk.isOpsChat(chatId)) {

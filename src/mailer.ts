@@ -372,6 +372,39 @@ export class Mailer {
     return c ? this.summary(c) : 'Проверок страниц ещё не было. Запустить: /pagecheck';
   }
 
+  /** /users — кому бот может написать. Длинный список делится на сообщения. */
+  users(msg: Message): string[] {
+    this.requireOps(msg);
+    const all = Object.values(this.store.state.users).sort((a, b) =>
+      a.name.localeCompare(b.name, 'ru'),
+    );
+    if (!all.length) return ['Пока никто не открывал бота.'];
+    const active = all.filter((u) => !u.blocked);
+    const blocked = all.filter((u) => u.blocked);
+    const line = (u: BotUser) =>
+      `${u.name}${u.username ? ` (@${u.username})` : ''} — с ${formatShortDate(new Date(u.firstAt), this.cfg.tz)}`;
+    const lines = [
+      `👥 Пользователи бота: ${active.length}. Им дойдут рассылки.`,
+      '',
+      ...active.map((u, i) => `${i + 1}. ${line(u)}`),
+    ];
+    if (blocked.length) {
+      lines.push('', `Заблокировали бота (${blocked.length}):`, ...blocked.map(line));
+    }
+    const chunks: string[] = [];
+    let cur = '';
+    for (const l of lines) {
+      if (cur && cur.length + l.length + 1 > 4000) {
+        chunks.push(cur);
+        cur = l;
+      } else {
+        cur = cur ? `${cur}\n${l}` : l;
+      }
+    }
+    chunks.push(cur);
+    return chunks;
+  }
+
   /** Раз в несколько минут: напоминания и итоги проверок. */
   async tick(): Promise<void> {
     const now = this.clock.now().getTime();

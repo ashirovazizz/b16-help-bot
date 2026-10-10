@@ -22,6 +22,25 @@ describe('пользователи бота', () => {
     expect(h.store.state.users[ivan.id]).toMatchObject({ name: 'Иван Петров', username: 'ivan_p' });
   });
 
+  it('/users показывает список в рабочем чате, но не вне его', async () => {
+    const h = await withUsers({ blockedUsers: [olga.id] });
+    await h.handle(h.groupText(vika, `/broadcast@${BOT} текст`, { thread: TOPIC }));
+    await h.handle(h.callback(vika, 'o:send:1', 'ops'));
+    await h.mailer.idle();
+
+    await h.handle(h.groupText(vika, `/users@${BOT}`, { thread: TOPIC }));
+    const list = h.lastText(OPS);
+    expect(list).toContain('Пользователи бота: 1');
+    expect(list).toContain('1. Иван Петров (@ivan_p) — с 28.09');
+    expect(list).toContain('Заблокировали бота (1):\nОльга');
+    expect(h.sent('sendMessage', (p) => p.chat_id === OPS).at(-1)?.payload.message_thread_id).toBe(
+      TOPIC,
+    );
+
+    await h.handle(h.privateText(ivan, `/users`));
+    expect(h.lastText(ivan.id)).not.toContain('Пользователи бота');
+  });
+
   it('берёт в список всех, кто уже отправлял заявки', () => {
     const now = '2026-09-01T10:00:00.000Z';
     const store = Store.memory({

@@ -109,6 +109,7 @@ await bot.api.setMyCommands(
     { command: 'broadcast', description: 'Рассылка всем пользователям бота' },
     { command: 'pagecheck', description: 'Проверка страниц на сайте' },
     { command: 'checkstatus', description: 'Итоги проверки страниц' },
+    { command: 'users', description: 'Кто пользуется ботом' },
     { command: 'id', description: 'ID чата и темы' },
   ],
   { scope: { type: 'all_group_chats' } },
