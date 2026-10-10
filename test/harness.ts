@@ -4,6 +4,7 @@ import { registerHandlers } from '../src/bot.js';
 import { silentLogger } from '../src/core/logger.js';
 import { type Clock, parseDateTime } from '../src/core/time.js';
 import { Desk } from '../src/desk.js';
+import { Mailer } from '../src/mailer.js';
 import { Store } from '../src/store.js';
 
 export const TZ = 'Europe/Moscow';
@@ -59,6 +60,8 @@ export interface HarnessOptions {
   failCopyMessages?: boolean;
   store?: Store;
   setupCode?: string | null;
+  /** Эти пользователи заблокировали бота: личные сообщения им падают с 403 */
+  blockedUsers?: number[];
 }
 
 export function harness(opts: HarnessOptions = {}) {
@@ -71,6 +74,16 @@ export function harness(opts: HarnessOptions = {}) {
     const p = (payload ?? {}) as Record<string, unknown>;
     calls.push({ method, payload: p });
     let result: unknown = true;
+    if (
+      (method === 'sendMessage' || method === 'copyMessage') &&
+      opts.blockedUsers?.includes(p.chat_id as number)
+    ) {
+      return {
+        ok: false,
+        error_code: 403,
+        description: 'Forbidden: bot was blocked by the user',
+      } as never;
+    }
     if (method === 'sendMessage') {
       result = {
         message_id: nextId++,
@@ -113,7 +126,15 @@ export function harness(opts: HarnessOptions = {}) {
     silentLogger,
     clock,
   );
-  registerHandlers(bot, desk, silentLogger, {
+  const mailer = new Mailer(
+    bot.api,
+    store,
+    desk,
+    { tz: TZ, teamPageUrl: 'https://dh.itmo.ru/team', checkRemindDays: 3, checkCloseDays: 7 },
+    silentLogger,
+    clock,
+  );
+  registerHandlers(bot, desk, mailer, silentLogger, {
     alert: async (t) => {
       alerts.push(t);
     },
@@ -279,6 +300,7 @@ export function harness(opts: HarnessOptions = {}) {
     alerts,
     store,
     desk,
+    mailer,
     clock,
     handle,
     sent,

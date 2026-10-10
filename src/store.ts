@@ -56,6 +56,47 @@ export interface Draft {
   answers?: Record<string, Answer>;
 }
 
+/** Кто хоть раз писал боту в личку: только им бот может написать сам. */
+export interface BotUser {
+  id: number;
+  name: string;
+  username?: string;
+  firstAt: string;
+  lastAt: string;
+  /** Пользователь заблокировал бота: рассылки до него не дойдут */
+  blocked?: boolean;
+}
+
+/** Ответ на проверку страниц. */
+export type CheckAnswer = 'ok' | 'edit' | 'new';
+
+/** Рассылка из рабочего чата: обычное сообщение или проверка страниц. */
+export interface Campaign {
+  id: number;
+  kind: 'broadcast' | 'check';
+  /** Откуда запустили: сюда же приходят отчёт и итоги */
+  chatId: number;
+  threadId?: number;
+  authorId: number;
+  authorName: string;
+  createdAt: string;
+  status: 'preview' | 'sending' | 'sent' | 'cancelled' | 'closed';
+  /** Сообщение с предпросмотром и кнопками */
+  previewId?: number;
+  /** Текст рассылки или сообщение рабочего чата, которое разошлём копией */
+  text?: string;
+  source?: { chatId: number; messageId: number };
+  /** Проверка: через сколько дней напомнить и подвести итоги */
+  remindDays?: number;
+  closeDays?: number;
+  sentAt?: string;
+  remindedAt?: string;
+  closedAt?: string;
+  delivered?: number[];
+  failed?: number[];
+  answers?: Record<string, { answer: CheckAnswer; at: string }>;
+}
+
 /** Куда падают заявки группы процессов. */
 export interface Binding {
   chatId: number;
@@ -68,9 +109,37 @@ export interface State {
   tickets: Ticket[];
   drafts: Record<string, Draft>;
   bindings: Record<string, Binding>;
+  users: Record<string, BotUser>;
+  campaignSeq: number;
+  campaigns: Campaign[];
 }
 
-const emptyState = (): State => ({ version: 1, seq: 0, tickets: [], drafts: {}, bindings: {} });
+const emptyState = (): State => ({
+  version: 1,
+  seq: 0,
+  tickets: [],
+  drafts: {},
+  bindings: {},
+  users: {},
+  campaignSeq: 0,
+  campaigns: [],
+});
+
+/** Все, кто уже отправлял заявки, — тоже пользователи бота (список появился позже заявок). */
+function withUsersFromTickets(s: State): State {
+  for (const t of s.tickets) {
+    const key = String(t.userId);
+    if (s.users[key]) continue;
+    s.users[key] = {
+      id: t.userId,
+      name: t.userName,
+      ...(t.username ? { username: t.username } : {}),
+      firstAt: t.createdAt,
+      lastAt: t.updatedAt,
+    };
+  }
+  return s;
+}
 
 /**
  * Состояние бота в одном JSON-файле. Заявок немного, базе данных тут
@@ -87,7 +156,8 @@ export class Store {
   static async open(file: string): Promise<Store> {
     try {
       const raw = await readFile(file, 'utf8');
-      return new Store(file, { ...emptyState(), ...(JSON.parse(raw) as Partial<State>) });
+      const saved = JSON.parse(raw) as Partial<State>;
+      return new Store(file, withUsersFromTickets({ ...emptyState(), ...saved }));
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
       await mkdir(path.dirname(file), { recursive: true });
@@ -96,7 +166,10 @@ export class Store {
   }
 
   static memory(init: Partial<State> = {}): Store {
-    return new Store(undefined, { ...emptyState(), ...structuredClone(init) });
+    return new Store(
+      undefined,
+      withUsersFromTickets({ ...emptyState(), ...structuredClone(init) }),
+    );
   }
 
   /** Только для чтения: менять состояние — через update */

@@ -6,6 +6,7 @@ import { registerHandlers } from './bot.js';
 import { type Config, holidaysOf, loadConfig } from './config.js';
 import { createLogger } from './core/logger.js';
 import { Desk } from './desk.js';
+import { Mailer } from './mailer.js';
 import type { Binding } from './store.js';
 import { Store } from './store.js';
 
@@ -54,7 +55,21 @@ const desk = new Desk(
   log,
 );
 
-registerHandlers(bot, desk, log);
+const mailer = new Mailer(
+  bot.api,
+  store,
+  desk,
+  {
+    tz: config.TIMEZONE,
+    teamPageUrl: config.TEAM_PAGE_URL,
+    checkRemindDays: config.CHECK_REMIND_DAYS,
+    checkCloseDays: config.CHECK_CLOSE_DAYS,
+    sendDelayMs: 60,
+  },
+  log,
+);
+
+registerHandlers(bot, desk, mailer, log);
 
 let digest: Cron | undefined;
 if (config.DIGEST_TIME !== 'off') {
@@ -72,12 +87,13 @@ if (config.DIGEST_TIME !== 'off') {
   );
 }
 
-// Напоминание о заявках, которые начали и не отправили
+// Напоминания: о неотправленных заявках и о проверке страниц; итоги проверок
 const reminders = new Cron('*/5 * * * *', { protect: true }, async () => {
   try {
-    await desk.remindDrafts();
+    if (config.DRAFT_REMIND_MINUTES > 0) await desk.remindDrafts(config.DRAFT_REMIND_MINUTES);
+    await mailer.tick();
   } catch (error) {
-    log.error('Не удалось разослать напоминания о черновиках', { error });
+    log.error('Не удалось разослать напоминания', { error });
   }
 });
 
@@ -87,6 +103,15 @@ await bot.api.setMyCommands(
     { command: 'help', description: 'Как работает бот' },
   ],
   { scope: { type: 'all_private_chats' } },
+);
+await bot.api.setMyCommands(
+  [
+    { command: 'broadcast', description: 'Рассылка всем пользователям бота' },
+    { command: 'pagecheck', description: 'Проверка страниц на сайте' },
+    { command: 'checkstatus', description: 'Итоги проверки страниц' },
+    { command: 'id', description: 'ID чата и темы' },
+  ],
+  { scope: { type: 'all_group_chats' } },
 );
 
 const shutdown = async (signal: string) => {

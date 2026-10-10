@@ -27,6 +27,14 @@ const schema = z.object({
   SLA_DAYS: z.preprocess(blank, z.coerce.number().int().min(1).max(30).default(3)),
   /** Праздники через запятую: 2026-11-04,2026-12-31 */
   HOLIDAYS: z.preprocess(blank, z.string().default('')),
+  /** Через сколько минут напомнить о неотправленной заявке, 0 — не напоминать */
+  DRAFT_REMIND_MINUTES: z.preprocess(blank, z.coerce.number().int().min(0).max(10080).default(30)),
+  /** Проверка страниц: через сколько дней напомнить не ответившим (0 — не напоминать) */
+  CHECK_REMIND_DAYS: z.preprocess(blank, z.coerce.number().int().min(0).max(60).default(3)),
+  /** …и через сколько дней прислать итоги */
+  CHECK_CLOSE_DAYS: z.preprocess(blank, z.coerce.number().int().min(1).max(90).default(7)),
+  /** Страница команды на сайте — её ссылку бот даёт в проверке */
+  TEAM_PAGE_URL: z.preprocess(blank, z.string().url().default('https://dh.itmo.ru/team')),
   TIMEZONE: z.preprocess(blank, z.string().default('Europe/Moscow')),
   DATA_DIR: z.preprocess(blank, z.string().default('./data')),
   LOG_LEVEL: z.preprocess(blank, z.enum(['debug', 'info', 'warn', 'error']).default('info')),

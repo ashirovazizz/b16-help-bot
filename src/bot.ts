@@ -2,6 +2,7 @@ import type { Bot, Context } from 'grammy';
 import { isUserError } from './core/errors.js';
 import type { Logger } from './core/logger.js';
 import type { Desk, EditorAction } from './desk.js';
+import type { Mailer } from './mailer.js';
 
 export interface HandlerOptions {
   /** Куда сообщить о непредвиденной ошибке */
@@ -23,6 +24,7 @@ function inThread(ctx: Context) {
 export function registerHandlers(
   bot: Bot,
   desk: Desk,
+  mailer: Mailer,
   log: Logger,
   opts: HandlerOptions = {},
 ): Bot {
@@ -46,6 +48,14 @@ export function registerHandlers(
     else if (ctx.chat?.type === 'private') await ctx.reply(text).catch(() => {});
   });
 
+  // Каждый, кто пишет боту в личку, попадает в список для рассылок
+  bot.use(async (ctx, next) => {
+    if (ctx.chat?.type === 'private' && ctx.from && (ctx.message || ctx.callbackQuery)) {
+      await mailer.touch(ctx.from);
+    }
+    await next();
+  });
+
   /* ───── любые чаты ───── */
 
   bot.command('id', async (ctx) => {
@@ -64,7 +74,11 @@ export function registerHandlers(
   // Бота добавили в группу — подсказываем, как выбрать тему для заявок
   bot.on('my_chat_member', async (ctx) => {
     const { chat, new_chat_member: m, old_chat_member: old } = ctx.myChatMember;
-    if (chat.type === 'private' || desk.isOpsChat(chat.id)) return;
+    if (chat.type === 'private') {
+      await mailer.setBlocked(ctx.myChatMember.from, m.status === 'kicked');
+      return;
+    }
+    if (desk.isOpsChat(chat.id)) return;
     const joined =
       (m.status === 'member' || m.status === 'administrator') &&
       (old.status === 'left' || old.status === 'kicked');
@@ -129,6 +143,18 @@ export function registerHandlers(
     await ctx.answerCallbackQuery({ text: 'Отменено' });
   });
 
+  priv.callbackQuery(/^c:(ok|edit|new):(\d+)$/, (ctx) =>
+    guard(ctx, async () => {
+      const text = await mailer.answer(
+        Number(ctx.match[2]),
+        ctx.match[1] as 'ok' | 'edit' | 'new',
+        ctx.from,
+        ctx.callbackQuery.message?.message_id,
+      );
+      await ctx.answerCallbackQuery(text ? { text } : {});
+    }),
+  );
+
   priv.callbackQuery('m:list', async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.reply(desk.myTickets(ctx.from.id));
@@ -146,6 +172,36 @@ export function registerHandlers(
   });
 
   /* ───── рабочий чат ───── */
+
+  bot.command('broadcast', (ctx) =>
+    guard(ctx, () => mailer.startBroadcast(ctx.msg, ctx.from!, ctx.match, ctx.me.username)),
+  );
+
+  bot.command('pagecheck', (ctx) =>
+    guard(ctx, () =>
+      mailer.startCheck(ctx.msg, ctx.from!, ctx.match.trim().split(/\s+/).filter(Boolean)),
+    ),
+  );
+
+  bot.command('checkstatus', (ctx) =>
+    guard(ctx, async () => {
+      await ctx.reply(mailer.status(ctx.msg), inThread(ctx));
+    }),
+  );
+
+  bot.callbackQuery(/^o:(send|cancel):(\d+)$/, async (ctx) => {
+    const chatId = ctx.callbackQuery.message?.chat.id;
+    if (chatId === undefined || !desk.isOpsChat(chatId)) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+    const text = await mailer.confirm(
+      Number(ctx.match[2]),
+      ctx.match[1] as 'send' | 'cancel',
+      ctx.from,
+    );
+    await ctx.answerCallbackQuery({ text });
+  });
 
   bot.callbackQuery(/^t:(take|done|reject|reopen):(\d+)$/, async (ctx) => {
     const chatId = ctx.callbackQuery.message?.chat.id;
