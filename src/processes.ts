@@ -1,3 +1,5 @@
+import { isUpcoming, TALK_FORMATS, TALK_PROCESS, talkAnnouncement, talkLine } from './talks.js';
+
 /**
  * Процессы, с которыми бот помогает сотрудникам. Новый процесс — новая
  * запись здесь. Процессы одной группы падают в одну тему рабочего чата;
@@ -11,9 +13,17 @@ export interface Question {
   label: string;
   /** Вопрос сотруднику */
   ask: string;
-  kind: 'text' | 'photo';
+  /** choice — кнопки с вариантами, но можно и написать свой */
+  kind: 'text' | 'photo' | 'choice';
+  options?: readonly string[];
   optional?: boolean;
+  /** Подпись к фото в рабочем чате */
+  caption?: string;
+  /** Задавать, только если условие выполняется (по уже данным ответам) */
+  when?: (answers: Answers, ctx: { now: Date; tz: string }) => boolean;
 }
+
+export type Answers = Record<string, string | undefined>;
 
 export interface ProcessDef {
   id: string;
@@ -28,12 +38,17 @@ export interface ProcessDef {
   intro: string;
   /** Есть вопросы — бот ведёт по анкете; нет — принимает свободный текст */
   questions?: readonly Question[];
+  /** Сообщение редактору под анкетой, например черновик строки для поста */
+  note?: (userName: string, answers: Answers, ctx: { now: Date; tz: string }) => string | undefined;
 }
 
 /** Группы процессов и их темы в рабочем чате. */
 export const GROUPS: Readonly<Record<string, string>> = {
   site: 'Страницы на сайте',
+  talks: 'Выступления',
 };
+
+const upcoming = (a: Answers, { now, tz }: { now: Date; tz: string }) => isUpcoming(a, now, tz);
 
 export const PROCESSES: readonly ProcessDef[] = [
   {
@@ -103,8 +118,112 @@ export const PROCESSES: readonly ProcessDef[] = [
         label: 'Фото',
         ask: 'Фото для страницы. Лучше отправить файлом (скрепка → «Файл»), так оно не потеряет качество.',
         kind: 'photo',
+        caption: 'Фото для страницы',
       },
     ],
+  },
+  {
+    id: TALK_PROCESS,
+    group: 'talks',
+    title: 'Выступление',
+    short: 'выступление',
+    button: 'Рассказать о выступлении',
+    emoji: '🎤',
+    intro:
+      'Расскажите о выступлении: докладе, лекции, дискуссии, интервью. Напишем об этом в канале центра, ' +
+      'обычно в итогах месяца. Если выступление ещё впереди, тоже рассказывайте: можно сделать анонс.',
+    questions: [
+      {
+        key: 'event',
+        label: 'Где',
+        ask: 'Где? Напишите с предлогом, например: «на форуме «Радикальная стабильность» в ГЭС-2» или «в Шанинке».',
+        kind: 'text',
+      },
+      {
+        key: 'date',
+        label: 'Когда',
+        ask: 'Когда? Например: 15.10.2026.',
+        kind: 'text',
+      },
+      {
+        key: 'format',
+        label: 'Формат',
+        ask: 'Что это было? Выберите или напишите своё.',
+        kind: 'choice',
+        options: TALK_FORMATS,
+      },
+      {
+        key: 'topic',
+        label: 'Тема',
+        ask: 'О чём? Название доклада или лекции, а если названия нет — пара слов о сути.',
+        kind: 'text',
+      },
+      {
+        key: 'about',
+        label: 'О чём',
+        ask: 'Выступление ещё впереди — сделаем анонс. В двух-трёх предложениях: о чём расскажете, кому будет интересно?',
+        kind: 'text',
+        when: upcoming,
+      },
+      {
+        key: 'role',
+        label: 'Как представить',
+        ask: 'Как вас представить в анонсе? Например: «исследовательница, преподавательница DH-центра».',
+        kind: 'text',
+        optional: true,
+        when: upcoming,
+      },
+      {
+        key: 'time',
+        label: 'Время',
+        ask: 'Во сколько? Например: 19:00–20:30.',
+        kind: 'text',
+        optional: true,
+        when: upcoming,
+      },
+      {
+        key: 'place',
+        label: 'Адрес',
+        ask: 'Где именно: адрес и зал или «онлайн».',
+        kind: 'text',
+        optional: true,
+        when: upcoming,
+      },
+      {
+        key: 'reg',
+        label: 'Регистрация',
+        ask: 'Ссылка на регистрацию, если она нужна.',
+        kind: 'text',
+        optional: true,
+        when: upcoming,
+      },
+      {
+        key: 'with',
+        label: 'Вместе с',
+        ask: 'Выступали вместе с кем-то из коллег или студентов? Напишите имена.',
+        kind: 'text',
+        optional: true,
+      },
+      {
+        key: 'link',
+        label: 'Ссылка',
+        ask: 'Ссылка на программу, анонс, пост организаторов или запись.',
+        kind: 'text',
+        optional: true,
+      },
+      {
+        key: 'photo',
+        label: 'Фото',
+        ask: 'Фото с выступления, если есть.',
+        kind: 'photo',
+        optional: true,
+        caption: 'Фото с выступления',
+      },
+    ],
+    note: (name, a, { now, tz }) =>
+      isUpcoming(a, now, tz)
+        ? `📣 Черновик анонса:\n\n${talkAnnouncement(name, a, now, tz)}\n\nВ итоги месяца выступление тоже попадёт: /talks`
+        : `📝 Черновик для итогов месяца:\n${talkLine(name, a)}`,
   },
 ];
 

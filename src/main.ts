@@ -110,6 +110,7 @@ await bot.api.setMyCommands(
     { command: 'pagecheck', description: 'Проверка страниц на сайте' },
     { command: 'checkstatus', description: 'Итоги проверки страниц' },
     { command: 'users', description: 'Кто пользуется ботом' },
+    { command: 'talks', description: 'Выступления за месяц для итогов' },
     { command: 'id', description: 'ID чата и темы' },
   ],
   { scope: { type: 'all_group_chats' } },

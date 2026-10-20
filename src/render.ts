@@ -1,7 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import type { User } from 'grammy/types';
 import { formatShortDate, zonedParts } from './core/time.js';
-import { PROCESSES, type ProcessDef } from './processes.js';
+import { PROCESSES, type ProcessDef, type Question } from './processes.js';
 import type { Answer, Binding, Status, Ticket } from './store.js';
 
 export function esc(s: string): string {
@@ -76,10 +76,14 @@ export function cardKeyboard(t: Ticket): InlineKeyboard {
 const TEXT_CHUNK = 4000;
 
 /** Ответы анкеты для редактора: подписанные поля, готовые к копированию (HTML, по частям ≤ 4000). */
-export function answersText(p: ProcessDef, answers: Record<string, Answer>): string[] {
+export function answersText(
+  p: ProcessDef,
+  answers: Record<string, Answer>,
+  asked: (q: Question) => boolean = () => true,
+): string[] {
   const parts: string[] = [];
   for (const q of p.questions ?? []) {
-    if (q.kind !== 'text') continue;
+    if (q.kind === 'photo' || !asked(q)) continue;
     const value = answers[q.key]?.text;
     const body = value ? esc(value) : '—';
     const part = `<b>${esc(q.label)}</b>\n${body}`;
@@ -124,8 +128,14 @@ export function draftStatusText(count: number): string {
   );
 }
 
-export function questionKeyboard(optional: boolean): InlineKeyboard {
+export function questionKeyboard(
+  optional: boolean,
+  options: readonly string[] = [],
+): InlineKeyboard {
   const kb = new InlineKeyboard();
+  options.forEach((o, i) => {
+    kb.text(o, `d:pick:${i}`).row();
+  });
   if (optional) kb.text('⏭ Пропустить', 'd:skip');
   return kb.text('✖️ Отменить', 'd:cancel');
 }
@@ -137,9 +147,14 @@ export const summaryKeyboard = new InlineKeyboard()
   .text('✖️ Отменить', 'd:cancel');
 
 /** Итог анкеты для сотрудника перед отправкой. */
-export function summaryText(p: ProcessDef, answers: Record<string, Answer>): string {
+export function summaryText(
+  p: ProcessDef,
+  answers: Record<string, Answer>,
+  asked: (q: Question) => boolean = () => true,
+): string {
   const lines = ['Анкета заполнена:'];
   for (const q of p.questions ?? []) {
+    if (!asked(q)) continue;
     const a = answers[q.key];
     let value: string;
     if (!a) value = '—';

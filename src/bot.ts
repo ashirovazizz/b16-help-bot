@@ -131,6 +131,13 @@ export function registerHandlers(
     }),
   );
 
+  priv.callbackQuery(/^d:pick:(\d+)$/, (ctx) =>
+    guard(ctx, async () => {
+      await ctx.answerCallbackQuery();
+      await desk.pick(ctx.from.id, Number(ctx.match[1]));
+    }),
+  );
+
   priv.callbackQuery('d:restart', (ctx) =>
     guard(ctx, async () => {
       await desk.restart(ctx.from.id);
@@ -186,6 +193,12 @@ export function registerHandlers(
   bot.command('checkstatus', (ctx) =>
     guard(ctx, async () => {
       await ctx.reply(mailer.status(ctx.msg), inThread(ctx));
+    }),
+  );
+
+  bot.command('talks', (ctx) =>
+    guard(ctx, async () => {
+      for (const part of desk.talks(ctx.msg, ctx.match)) await ctx.reply(part, inThread(ctx));
     }),
   );
 

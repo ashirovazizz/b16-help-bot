@@ -6,7 +6,14 @@ import { UserError } from './core/errors.js';
 import type { Logger } from './core/logger.js';
 import { type Clock, systemClock } from './core/time.js';
 import { buildDigest } from './digest.js';
-import { GROUPS, PROCESSES, type ProcessDef, processById } from './processes.js';
+import {
+  type Answers,
+  GROUPS,
+  PROCESSES,
+  type ProcessDef,
+  processById,
+  type Question,
+} from './processes.js';
 import {
   answersText,
   cardKeyboard,
@@ -31,6 +38,7 @@ import {
   type Store,
   type Ticket,
 } from './store.js';
+import { parseMonth, talksDigest } from './talks.js';
 
 export interface DeskConfig {
   /** Код для /setup; без него тему задают только через .env */
@@ -179,26 +187,44 @@ export class Desk {
     if (guided) await this.ask(user.id, p, 0);
   }
 
+  /** Какие вопросы анкеты задаются при уже данных ответах (часть — только для будущих выступлений). */
+  private askedFilter(userId: number): (q: Question) => boolean {
+    const texts: Answers = {};
+    for (const [k, a] of Object.entries(this.draftOf(userId)?.answers ?? {})) texts[k] = a.text;
+    const ctx = { now: this.clock.now(), tz: this.cfg.tz };
+    return (q) => !q.when || q.when(texts, ctx);
+  }
+
+  private questionTitle(userId: number, p: ProcessDef, q: Question): string {
+    const asked = (p.questions ?? []).filter(this.askedFilter(userId));
+    return `${asked.indexOf(q) + 1}/${asked.length}. ${q.ask}`;
+  }
+
   /** Следующий вопрос анкеты или итог, если вопросы кончились. */
   private async ask(userId: number, p: ProcessDef, step: number): Promise<void> {
     const questions = p.questions ?? [];
-    const q = questions[step];
+    const asked = this.askedFilter(userId);
+    let at = step;
+    while (questions[at] && !asked(questions[at]!)) at++;
+    if (at !== step) {
+      await this.store.update((s) => {
+        const draft = s.drafts[String(userId)];
+        if (draft) draft.step = at;
+      });
+    }
+    const q = questions[at];
     if (!q) {
       const answers = this.draftOf(userId)?.answers ?? {};
-      const summary = await this.api.sendMessage(userId, summaryText(p, answers), {
+      const summary = await this.api.sendMessage(userId, summaryText(p, answers, asked), {
         reply_markup: summaryKeyboard,
       });
       await this.setPrompt(userId, summary.message_id);
       return;
     }
     const hint = q.optional ? ' (можно пропустить)' : '';
-    const m = await this.api.sendMessage(
-      userId,
-      `${step + 1}/${questions.length}. ${q.ask}${hint}`,
-      {
-        reply_markup: questionKeyboard(!!q.optional),
-      },
-    );
+    const m = await this.api.sendMessage(userId, `${this.questionTitle(userId, p, q)}${hint}`, {
+      reply_markup: questionKeyboard(!!q.optional, q.kind === 'choice' ? q.options : []),
+    });
     await this.setPrompt(userId, m.message_id);
   }
 
@@ -229,7 +255,7 @@ export class Desk {
       );
       return;
     }
-    if (q.kind === 'text' && msg.text === undefined) {
+    if (q.kind !== 'photo' && msg.text === undefined) {
       await this.api.sendMessage(userId, 'Здесь нужен текст — напишите ответ сообщением.');
       return;
     }
@@ -237,23 +263,54 @@ export class Desk {
       await this.api.sendMessage(userId, 'Пришлите фото — картинкой или файлом.');
       return;
     }
-    const next = d.step + 1;
+    await this.react(userId, msg.message_id);
+    await this.recordAnswer(userId, p, d.step, {
+      messageId: msg.message_id,
+      ...(msg.text !== undefined ? { text: msg.text } : {}),
+    });
+  }
+
+  private async recordAnswer(
+    userId: number,
+    p: ProcessDef,
+    step: number,
+    answer: { messageId: number; text?: string },
+  ): Promise<void> {
+    const q = p.questions?.[step];
+    if (!q) return;
+    const next = step + 1;
     await this.store.update((s) => {
       const draft = s.drafts[String(userId)];
       if (!draft) return;
       draft.lastAt = this.now();
       draft.reminded = false;
-      draft.answers = {
-        ...draft.answers,
-        [q.key]: {
-          messageId: msg.message_id,
-          ...(msg.text !== undefined ? { text: msg.text } : {}),
-        },
-      };
+      draft.answers = { ...draft.answers, [q.key]: answer };
       draft.step = next;
     });
-    await this.react(userId, msg.message_id);
     await this.ask(userId, p, next);
+  }
+
+  /** Кнопка с вариантом ответа в анкете. */
+  async pick(userId: number, index: number): Promise<void> {
+    const d = this.draftOf(userId);
+    const p = d && processById(d.process);
+    const q = p?.questions?.[d?.step ?? -1];
+    const option = q?.kind === 'choice' ? q.options?.[index] : undefined;
+    if (!d || !p || d.step === undefined || !option) {
+      throw new UserError('Этот вопрос уже позади. Выберите раздел в меню: /start');
+    }
+    const promptId = d.promptId ?? 0;
+    if (promptId) {
+      const questions = p.questions ?? [];
+      await this.api
+        .editMessageText(
+          userId,
+          promptId,
+          `${d.step + 1}/${questions.length}. ${q!.ask}\n\n→ ${option}`,
+        )
+        .catch(() => {});
+    }
+    await this.recordAnswer(userId, p, d.step, { messageId: promptId, text: option });
   }
 
   /**
@@ -388,6 +445,12 @@ export class Desk {
       opsMessages: [],
       userMessages: [],
     };
+    if (guided) {
+      const texts: Record<string, string> = {};
+      for (const [k, a] of Object.entries(d.answers ?? {}))
+        if (a.text !== undefined) texts[k] = a.text;
+      t.answers = texts;
+    }
     const card = await this.api.sendMessage(b.chatId, cardText(t, p, this.cfg.tz), {
       parse_mode: 'HTML',
       reply_markup: cardKeyboard(t),
@@ -398,7 +461,7 @@ export class Desk {
     t.opsMessages.push(card.message_id);
 
     if (guided) {
-      t.opsMessages.push(...(await this.sendAnswers(user.id, p, d, b, t.cardId)));
+      t.opsMessages.push(...(await this.sendAnswers(user.id, p, d, b, t.cardId, t.userName)));
     } else {
       const copies = await this.copyAll(user.id, d.messages, b);
       t.opsMessages.push(...copies.ids);
@@ -437,11 +500,16 @@ export class Desk {
     d: Draft,
     b: Binding,
     cardId: number,
+    userName: string,
   ): Promise<number[]> {
     const ids: number[] = [];
     const answers = d.answers ?? {};
     const reply = { reply_parameters: { message_id: cardId, allow_sending_without_reply: true } };
-    for (const chunk of answersText(p, answers)) {
+    const asked = (q: Question) => {
+      const texts = Object.fromEntries(Object.entries(answers).map(([k, a]) => [k, a.text]));
+      return !q.when || q.when(texts, { now: this.clock.now(), tz: this.cfg.tz });
+    };
+    for (const chunk of answersText(p, answers, asked)) {
       const m = await this.api.sendMessage(b.chatId, chunk, {
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
@@ -457,7 +525,7 @@ export class Desk {
         const copy = await this.api.copyMessage(b.chatId, from, a.messageId, {
           ...thread(b),
           ...reply,
-          caption: `${q.label} для страницы`,
+          caption: q.caption ?? q.label,
         });
         ids.push(copy.message_id);
       } catch (error) {
@@ -470,7 +538,33 @@ export class Desk {
         ids.push(warn.message_id);
       }
     }
+    const texts = Object.fromEntries(Object.entries(answers).map(([k, a]) => [k, a.text]));
+    const note = p.note?.(userName, texts, { now: this.clock.now(), tz: this.cfg.tz });
+    if (note) {
+      const m = await this.api.sendMessage(b.chatId, note, {
+        link_preview_options: { is_disabled: true },
+        ...thread(b),
+        ...reply,
+      });
+      ids.push(m.message_id);
+    }
     return ids;
+  }
+
+  /** /talks [месяц] — выступления за месяц черновиками строк для итогов. */
+  talks(msg: Message, arg: string): string[] {
+    if (msg.chat.type === 'private' || !this.isOpsChat(msg.chat.id)) {
+      throw new UserError('Список выступлений можно посмотреть только в рабочем чате.');
+    }
+    let month: { year: number; month: number };
+    try {
+      month = parseMonth(arg, this.clock.now(), this.cfg.tz);
+    } catch {
+      throw new UserError(
+        'Укажите месяц так: /talks 10, /talks 2026-10 или /talks октябрь. Без месяца — текущий.',
+      );
+    }
+    return talksDigest(this.store.state.tickets, month, this.clock.now(), this.cfg.tz);
   }
 
   private async copyAll(from: number, ids: number[], b: Binding) {

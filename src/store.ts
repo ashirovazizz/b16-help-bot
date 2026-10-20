@@ -29,6 +29,8 @@ export interface Ticket {
   opsMessages: number[];
   /** Сообщения бота в личке заявителя по этой заявке */
   userMessages: number[];
+  /** Анкета: текстовые ответы по ключам вопросов */
+  answers?: Record<string, string>;
 }
 
 /** Ответ на вопрос анкеты. */
