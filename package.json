@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.2",
+    "@grammyjs/menu": "^1.5.0",
     "croner": "^10.0.1",
     "grammy": "^1.46.0",
     "zod": "^4.6.5"

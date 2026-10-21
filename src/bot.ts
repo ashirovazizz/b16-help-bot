@@ -56,6 +56,9 @@ export function registerHandlers(
     await next();
   });
 
+  // Панель темы «Рассылки» (@grammyjs/menu)
+  bot.use(mailer.menu);
+
   /* ───── любые чаты ───── */
 
   bot.command('id', async (ctx) => {
@@ -68,7 +71,15 @@ export function registerHandlers(
 
   bot.command('setup', async (ctx) => {
     const args = ctx.match.trim().split(/\s+/).filter(Boolean);
-    await ctx.reply(await desk.setup(ctx.msg, args), inThread(ctx));
+    const answer = await desk.setup(ctx.msg, args);
+    // тема рассылок выбрана — вместо ответа сразу ставим панель, а команду с кодом стираем
+    const ok = answer.startsWith('Готово');
+    if (ok && args[1] === 'mail' && mailer.inMailTopic(ctx.chat.id, ctx.msg.message_thread_id)) {
+      await ctx.api.deleteMessage(ctx.chat.id, ctx.msg.message_id).catch(() => {});
+      await mailer.showPanel(ctx.api);
+      return;
+    }
+    await ctx.reply(answer, inThread(ctx));
   });
 
   // Бота добавили в группу — подсказываем, как выбрать тему для заявок
@@ -180,20 +191,9 @@ export function registerHandlers(
 
   /* ───── рабочий чат ───── */
 
-  bot.command('broadcast', (ctx) =>
-    guard(ctx, () => mailer.startBroadcast(ctx.msg, ctx.from!, ctx.match, ctx.me.username)),
-  );
-
-  bot.command('pagecheck', (ctx) =>
-    guard(ctx, () =>
-      mailer.startCheck(ctx.msg, ctx.from!, ctx.match.trim().split(/\s+/).filter(Boolean)),
-    ),
-  );
-
-  bot.command('checkstatus', (ctx) =>
-    guard(ctx, async () => {
-      await ctx.reply(mailer.status(ctx.msg), inThread(ctx));
-    }),
+  // /mail в теме «Рассылки» — показать панель заново (старая удаляется)
+  bot.command('mail', (ctx) =>
+    guard(ctx, () => mailer.panelCommand(ctx.msg, ctx.me.username, ctx.api)),
   );
 
   bot.command('talks', (ctx) =>
@@ -202,24 +202,20 @@ export function registerHandlers(
     }),
   );
 
-  bot.command('users', (ctx) =>
-    guard(ctx, async () => {
-      for (const part of mailer.users(ctx.msg)) await ctx.reply(part, inThread(ctx));
-    }),
-  );
-
-  bot.callbackQuery(/^o:(send|cancel):(\d+)$/, async (ctx) => {
-    const chatId = ctx.callbackQuery.message?.chat.id;
-    if (chatId === undefined || !desk.isOpsChat(chatId)) {
+  // Кнопки под предпросмотром рассылки и проверки страниц
+  bot.callbackQuery(/^o:(send|cancel|remind|close|stat):(\d+)$/, async (ctx) => {
+    const msg = ctx.callbackQuery.message;
+    if (!msg || !mailer.inMailTopic(msg.chat.id, msg.message_thread_id)) {
       await ctx.answerCallbackQuery();
       return;
     }
-    const text = await mailer.confirm(
-      Number(ctx.match[2]),
-      ctx.match[1] as 'send' | 'cancel',
-      ctx.from,
-    );
-    await ctx.answerCallbackQuery({ text });
+    const text = await mailer.confirm(Number(ctx.match[2]), ctx.match[1]!, ctx.from);
+    await ctx.answerCallbackQuery(text ? { text } : {});
+  });
+
+  // Любое сообщение в теме «Рассылки» — заготовка рассылки
+  bot.on('message', async (ctx, next) => {
+    if (ctx.chat.type === 'private' || !(await mailer.takeContent(ctx.msg))) return next();
   });
 
   bot.callbackQuery(/^t:(take|done|reject|reopen):(\d+)$/, async (ctx) => {

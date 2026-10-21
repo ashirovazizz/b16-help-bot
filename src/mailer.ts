@@ -1,11 +1,12 @@
-import { type Api, GrammyError, InlineKeyboard } from 'grammy';
+import { Menu } from '@grammyjs/menu';
+import { type Api, type Context, GrammyError, InlineKeyboard } from 'grammy';
 import type { Message, User } from 'grammy/types';
 import { UserError } from './core/errors.js';
 import type { Logger } from './core/logger.js';
 import { type Clock, formatShortDate, systemClock } from './core/time.js';
-import type { Desk } from './desk.js';
+import { type Desk, MAIL_TOPIC } from './desk.js';
 import { displayName } from './render.js';
-import type { BotUser, Campaign, CheckAnswer, Store } from './store.js';
+import type { Binding, BotUser, Campaign, CheckAnswer, Store } from './store.js';
 
 export interface MailerConfig {
   tz: string;
@@ -18,6 +19,11 @@ export interface MailerConfig {
 }
 
 const DAY = 86_400_000;
+/** Неподтверждённый предпросмотр живёт час, потом бот его убирает */
+const PREVIEW_TTL = 3_600_000;
+/** Варианты сроков проверки: кнопка переключает по кругу */
+const REMIND_STEPS = [0, 1, 2, 3, 5, 7];
+const CLOSE_STEPS = [3, 5, 7, 10, 14];
 
 const ANSWER_LABELS: Record<CheckAnswer, string> = {
   ok: '✅ Всё актуально',
@@ -27,21 +33,28 @@ const ANSWER_LABELS: Record<CheckAnswer, string> = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function daysWord(n: number): string {
+function days(n: number): string {
   const d = n % 10;
   const dd = n % 100;
-  if (d === 1 && dd !== 11) return 'день';
-  if (d >= 2 && d <= 4 && (dd < 12 || dd > 14)) return 'дня';
-  return 'дней';
+  if (d === 1 && dd !== 11) return `${n} день`;
+  if (d >= 2 && d <= 4 && (dd < 12 || dd > 14)) return `${n} дня`;
+  return `${n} дней`;
 }
 
+const nextOf = (steps: number[], current: number) => steps.find((x) => x > current) ?? steps[0]!;
+
 /**
- * Рассылки из рабочего чата: обычное сообщение всем пользователям бота
- * и проверка страниц с кнопками, напоминанием и итогами.
+ * Рассылки ведутся в отдельной теме рабочего чата («Рассылки»), бот там
+ * администратор и видит все сообщения. Любое сообщение в теме — заготовка
+ * рассылки: бот отвечает предпросмотром с кнопками, а после отправки
+ * превращает его в отчёт. Вверху темы — панель (плагин @grammyjs/menu):
+ * проверка страниц, получатели, итоги; переходы правят её на месте.
  * Писать первым Telegram разрешает только тем, кто сам открывал бота.
  */
 export class Mailer {
   private sending: Promise<void> = Promise.resolve();
+  /** Панель темы «Рассылки»; подключается в боте через bot.use(mailer.menu) */
+  readonly menu: Menu<Context>;
 
   constructor(
     private readonly api: Api,
@@ -50,7 +63,35 @@ export class Mailer {
     private readonly cfg: MailerConfig,
     private readonly log: Logger,
     private readonly clock: Clock = systemClock,
-  ) {}
+  ) {
+    this.menu = this.buildMenu();
+  }
+
+  private buildMenu(): Menu<Context> {
+    const edit = (ctx: Context, text: string) =>
+      ctx
+        .editMessageText(text.slice(0, 4000), { link_preview_options: { is_disabled: true } })
+        .catch(() => {}); // «message is not modified» — текст не изменился
+    const root = new Menu<Context>('mail', { onMenuOutdated: 'Панель обновилась, нажмите ещё раз' })
+      .text('🔎 Проверка страниц', async (ctx) => {
+        if (!ctx.from) return;
+        const hint = await this.newCheck(ctx.from);
+        if (hint) await ctx.answerCallbackQuery({ text: hint, show_alert: true });
+      })
+      .row()
+      .submenu('👥 Получатели', 'mail-users', (ctx) => edit(ctx, this.usersText()))
+      .submenu('📊 Итоги проверки', 'mail-status', (ctx) => edit(ctx, this.statusText()))
+      .row()
+      .text('🔄 Обновить', (ctx) => edit(ctx, this.panelText()));
+    const users = new Menu<Context>('mail-users')
+      .text('🔄 Обновить', (ctx) => edit(ctx, this.usersText()))
+      .back('← Назад', (ctx) => edit(ctx, this.panelText()));
+    const status = new Menu<Context>('mail-status')
+      .text('🔄 Обновить', (ctx) => edit(ctx, this.statusText()))
+      .back('← Назад', (ctx) => edit(ctx, this.panelText()));
+    root.register([users, status]);
+    return root;
+  }
 
   private now(): string {
     return this.clock.now().toISOString();
@@ -105,98 +146,228 @@ export class Mailer {
     return this.store.state.campaigns.find((c) => c.id === id);
   }
 
-  /* ───── запуск из рабочего чата ───── */
-
-  private requireOps(msg: Message): void {
-    if (msg.chat.type === 'private' || !this.desk.isOpsChat(msg.chat.id)) {
-      throw new UserError('Рассылку можно запустить только из рабочего чата, где работает бот.');
-    }
+  private async patch(id: number, fn: (c: Campaign) => void): Promise<void> {
+    await this.store.update((s) => {
+      const c = s.campaigns.find((x) => x.id === id);
+      if (c) fn(c);
+    });
   }
 
-  private async createPreview(
-    msg: Message,
-    from: User,
-    fields: Pick<Campaign, 'kind'> & Partial<Campaign>,
-    describe: (count: number) => string,
-  ): Promise<void> {
+  /* ───── тема «Рассылки» ───── */
+
+  private get topic(): Binding | undefined {
+    return this.desk.binding(MAIL_TOPIC);
+  }
+
+  /** Сообщение из темы «Рассылки» (или кнопка под ним). */
+  inMailTopic(chatId: number | undefined, threadId: number | undefined): boolean {
+    const b = this.topic;
+    return !!b && b.chatId === chatId && (b.threadId === undefined || b.threadId === threadId);
+  }
+
+  private where(): { message_thread_id?: number } {
+    const t = this.topic?.threadId;
+    return t !== undefined ? { message_thread_id: t } : {};
+  }
+
+  private panelText(): string {
+    const users = Object.values(this.store.state.users);
+    const active = users.filter((u) => !u.blocked).length;
+    return [
+      '📣 Рассылки',
+      `Получателей: ${active} — все, кто открывал бота.`,
+      '',
+      'Чтобы разослать сообщение, просто напишите его в эту тему: текст, фото, файл, альбом. ' +
+        'Бот покажет, сколько человек его получат, и отправит после кнопки «Отправить».',
+    ].join('\n');
+  }
+
+  /**
+   * Панель в теме «Рассылки». Старая панель удаляется, чтобы она была одна.
+   * Меню рисуется только запросами из обработчика, поэтому нужен ctx.api.
+   */
+  async showPanel(api: Api): Promise<void> {
+    const b = this.topic;
+    if (!b) return;
+    const old = this.store.state.mailPanel;
+    const m = await api.sendMessage(b.chatId, this.panelText(), {
+      ...this.where(),
+      reply_markup: this.menu,
+    });
+    await this.store.update((s) => {
+      s.mailPanel = { chatId: b.chatId, messageId: m.message_id };
+    });
+    if (old) await this.api.deleteMessage(old.chatId, old.messageId).catch(() => {});
+  }
+
+  private usersText(): string {
+    const all = Object.values(this.store.state.users).sort((a, b) =>
+      a.name.localeCompare(b.name, 'ru'),
+    );
+    if (!all.length) return '👥 Пока никто не открывал бота.';
+    const active = all.filter((u) => !u.blocked);
+    const blocked = all.filter((u) => u.blocked);
+    const line = (u: BotUser) =>
+      `${u.name}${u.username ? ` (@${u.username})` : ''} — с ${formatShortDate(new Date(u.firstAt), this.cfg.tz)}`;
+    const lines = [
+      `👥 Получатели: ${active.length}`,
+      ...active.map((u, i) => `${i + 1}. ${line(u)}`),
+    ];
+    if (blocked.length) {
+      lines.push('', `Заблокировали бота (${blocked.length}):`, ...blocked.map(line));
+    }
+    return lines.join('\n');
+  }
+
+  private statusText(): string {
+    const c = [...this.store.state.campaigns]
+      .reverse()
+      .find((x) => x.kind === 'check' && (x.status === 'sent' || x.status === 'closed'));
+    return c ? this.summary(c) : '📊 Проверок страниц ещё не было.';
+  }
+
+  /* ───── обычная рассылка ───── */
+
+  /**
+   * Сообщение в теме «Рассылки» — заготовка рассылки. Команды, служебные
+   * сообщения, сообщения ботов и ответы на сообщения бота не трогаем.
+   * Альбом приходит несколькими сообщениями — собираем его в одну рассылку.
+   */
+  async takeContent(msg: Message): Promise<boolean> {
+    if (!this.inMailTopic(msg.chat.id, msg.message_thread_id) || !msg.from || msg.from.is_bot) {
+      return false;
+    }
+    const isCommand = msg.entities?.[0]?.type === 'bot_command' && msg.entities[0].offset === 0;
+    const content = [
+      msg.text,
+      msg.caption,
+      msg.photo,
+      msg.video,
+      msg.document,
+      msg.audio,
+      msg.voice,
+      msg.animation,
+      msg.video_note,
+      msg.sticker,
+      msg.poll,
+    ].some((x) => x !== undefined && x !== '');
+    const r = msg.reply_to_message;
+    const repliesToBot = !!r && !r.forum_topic_created && r.from?.is_bot === true;
+    if (isCommand || !content || repliesToBot) return true;
+
+    if (msg.media_group_id) {
+      const album = this.store.state.campaigns.find(
+        (c) => c.status === 'preview' && c.source?.mediaGroupId === msg.media_group_id,
+      );
+      if (album) {
+        await this.patch(album.id, (x) => {
+          x.source?.messageIds?.push(msg.message_id);
+        });
+        return true;
+      }
+    }
+
     const count = this.recipients().length;
-    if (!count) throw new UserError('Пока никто не открывал бота — рассылать некому.');
     const id = await this.store.update((s) => ++s.campaignSeq);
-    const thread = msg.message_thread_id;
+    const b = this.topic!;
+    await this.store.update((s) => {
+      s.campaigns.push({
+        id,
+        kind: 'broadcast',
+        chatId: msg.chat.id,
+        ...(b.threadId !== undefined ? { threadId: b.threadId } : {}),
+        authorId: msg.from!.id,
+        authorName: displayName(msg.from!),
+        createdAt: this.now(),
+        status: 'preview',
+        source: {
+          chatId: msg.chat.id,
+          messageId: msg.message_id,
+          messageIds: [msg.message_id],
+          ...(msg.media_group_id ? { mediaGroupId: msg.media_group_id } : {}),
+        },
+      });
+    });
+    const text = count
+      ? `Разослать это сообщение? Получат ${count} чел.`
+      : 'Разослать некому: бота ещё никто не открывал.';
+    const preview = await this.api.sendMessage(msg.chat.id, text, {
+      ...this.where(),
+      reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
+      ...(count
+        ? { reply_markup: this.confirmKeyboard(id, count) }
+        : { reply_markup: new InlineKeyboard().text('✖️ Убрать', `o:cancel:${id}`) }),
+    });
+    await this.patch(id, (x) => {
+      x.previewId = preview.message_id;
+    });
+    return true;
+  }
+
+  private confirmKeyboard(id: number, count: number): InlineKeyboard {
+    return new InlineKeyboard()
+      .text(`📣 Отправить (${count})`, `o:send:${id}`)
+      .text('✖️ Отменить', `o:cancel:${id}`);
+  }
+
+  /* ───── проверка страниц ───── */
+
+  private async newCheck(from: User): Promise<string> {
+    const b = this.topic;
+    if (!b) return '';
+    if (!this.recipients().length) return 'Пока никто не открывал бота — спрашивать некого.';
+    const id = await this.store.update((s) => ++s.campaignSeq);
+    const remindDays = this.cfg.checkRemindDays;
+    const closeDays = Math.max(this.cfg.checkCloseDays, remindDays + 1);
     const c: Campaign = {
       id,
-      chatId: msg.chat.id,
-      ...(thread !== undefined ? { threadId: thread } : {}),
+      kind: 'check',
+      chatId: b.chatId,
+      ...(b.threadId !== undefined ? { threadId: b.threadId } : {}),
       authorId: from.id,
       authorName: displayName(from),
       createdAt: this.now(),
       status: 'preview',
-      ...fields,
+      remindDays,
+      closeDays,
     };
-    const preview = await this.api.sendMessage(msg.chat.id, describe(count), {
-      ...(thread !== undefined ? { message_thread_id: thread } : {}),
-      reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
+    const m = await this.api.sendMessage(b.chatId, this.checkPreviewText(c), {
+      ...this.where(),
       link_preview_options: { is_disabled: true },
-      reply_markup: new InlineKeyboard()
-        .text(`📣 Отправить (${count})`, `o:send:${id}`)
-        .text('✖️ Отменить', `o:cancel:${id}`),
+      reply_markup: this.checkPreviewKeyboard(c),
     });
-    c.previewId = preview.message_id;
+    c.previewId = m.message_id;
     await this.store.update((s) => {
       s.campaigns.push(c);
     });
+    return '';
   }
 
-  /** /broadcast текст — или ответом на сообщение, которое надо разослать. */
-  async startBroadcast(msg: Message, from: User, text: string, botName: string): Promise<void> {
-    this.requireOps(msg);
-    const r = msg.reply_to_message;
-    // в темах форума «ответ» на первое сообщение темы ставится сам, это не выбор пользователя
-    const quoted = r && !r.forum_topic_created && r.message_id !== msg.message_thread_id ? r : null;
-    const body = text.trim();
-    if (!body && !quoted) {
-      throw new UserError(
-        `Напишите текст после команды: /broadcast@${botName} Текст рассылки\n` +
-          `или ответьте этой командой на сообщение, которое нужно разослать (можно с фото).`,
-      );
-    }
-    const fields: Partial<Campaign> & Pick<Campaign, 'kind'> = body
-      ? { kind: 'broadcast', text: body }
-      : { kind: 'broadcast', source: { chatId: msg.chat.id, messageId: quoted!.message_id } };
-    await this.createPreview(msg, from, fields, (n) =>
-      body
-        ? `📣 Рассылка получат ${n} чел. — все, кто открывал бота.\n\nТекст:\n${body}`
-        : `📣 Рассылка получат ${n} чел. — все, кто открывал бота.\n\nРазошлю сообщение, на которое вы ответили.`,
-    );
+  private checkPreviewText(c: Campaign): string {
+    const n = this.recipients().length;
+    const remind = c.remindDays ? `напомню через ${days(c.remindDays)}` : 'без напоминания';
+    return [
+      `🔎 Проверка страниц: вопрос получат ${n} чел.`,
+      `Не ответившим ${remind}, итоги пришлю сюда через ${days(c.closeDays ?? 7)}.`,
+      'Сроки меняются кнопками ниже.',
+      '',
+      '———',
+      this.checkText(),
+    ].join('\n');
   }
 
-  /** /pagecheck [дни до напоминания] [дни до итогов] */
-  async startCheck(msg: Message, from: User, args: string[]): Promise<void> {
-    this.requireOps(msg);
-    const nums = args.map(Number);
-    if (nums.some((n) => !Number.isInteger(n) || n < 0)) {
-      throw new UserError(
-        'Формат: /pagecheck [через сколько дней напомнить] [через сколько дней итоги], например /pagecheck 3 7. ' +
-          '0 вместо первого числа — без напоминания.',
-      );
-    }
-    const remindDays = nums[0] ?? this.cfg.checkRemindDays;
-    const closeDays = nums[1] ?? Math.max(this.cfg.checkCloseDays, remindDays + 1);
-    if (closeDays < 1 || closeDays <= remindDays) {
-      throw new UserError('Итоги должны прийти позже напоминания: второе число больше первого.');
-    }
-    const reminder = remindDays
-      ? `Не ответившим напомню через ${remindDays} ${daysWord(remindDays)}`
-      : 'Напоминания не будет';
-    await this.createPreview(msg, from, { kind: 'check', remindDays, closeDays }, (n) =>
-      [
-        `🔎 Проверка страниц: вопрос получат ${n} чел. — все, кто открывал бота.`,
-        `${reminder}, итоги пришлю сюда через ${closeDays} ${daysWord(closeDays)}.`,
-        '',
-        'Сообщение:',
-        this.checkText(),
-      ].join('\n'),
-    );
+  private checkPreviewKeyboard(c: Campaign): InlineKeyboard {
+    const n = this.recipients().length;
+    return new InlineKeyboard()
+      .text(
+        c.remindDays ? `⏰ Напомнить: через ${days(c.remindDays)}` : '⏰ Без напоминания',
+        `o:remind:${c.id}`,
+      )
+      .row()
+      .text(`📊 Итоги: через ${days(c.closeDays ?? 7)}`, `o:close:${c.id}`)
+      .row()
+      .text(`📣 Отправить (${n})`, `o:send:${c.id}`)
+      .text('✖️ Отменить', `o:cancel:${c.id}`);
   }
 
   private checkText(reminder = false): string {
@@ -218,26 +389,45 @@ export class Mailer {
       .text('🆕 Страницы нет', `c:new:${id}`);
   }
 
-  /** Кнопки под предпросмотром. Подтвердить или отменить может только автор. */
-  async confirm(id: number, action: 'send' | 'cancel', from: User): Promise<string> {
+  /* ───── кнопки под предпросмотром ───── */
+
+  /** Отправить, отменить, сроки проверки, обновить итоги. Возвращает подсказку. */
+  async confirm(id: number, action: string, from: User): Promise<string> {
     const c = this.campaign(id);
     if (!c) return 'Рассылка не найдена';
-    if (c.authorId !== from.id) return `Подтвердить может только ${c.authorName}`;
+    if (action === 'stat') {
+      await this.editPreview(c, this.summary(c), this.statusKeyboard(c));
+      return 'Обновлено';
+    }
     if (c.status !== 'preview') return 'Уже решено';
-    if (action === 'cancel') {
-      await this.store.update((s) => {
-        const x = s.campaigns.find((y) => y.id === id);
-        if (x) x.status = 'cancelled';
+    if (c.authorId !== from.id) return `Это рассылка ${c.authorName}: решает автор`;
+    if (action === 'remind' || action === 'close') {
+      await this.patch(id, (x) => {
+        if (action === 'remind') x.remindDays = nextOf(REMIND_STEPS, x.remindDays ?? 0);
+        else x.closeDays = nextOf(CLOSE_STEPS, x.closeDays ?? 7);
+        // итоги всегда позже напоминания
+        if ((x.closeDays ?? 7) <= (x.remindDays ?? 0)) {
+          x.closeDays = CLOSE_STEPS.find((d) => d > (x.remindDays ?? 0)) ?? 14;
+        }
       });
-      if (c.previewId) {
-        await this.api.editMessageText(c.chatId, c.previewId, 'Рассылка отменена.').catch(() => {});
+      const fresh = this.campaign(id)!;
+      await this.editPreview(fresh, this.checkPreviewText(fresh), this.checkPreviewKeyboard(fresh));
+      return '';
+    }
+    if (action === 'cancel') {
+      await this.patch(id, (x) => {
+        x.status = 'cancelled';
+      });
+      if (c.previewId) await this.api.deleteMessage(c.chatId, c.previewId).catch(() => {});
+      for (const m of c.source?.messageIds ?? []) {
+        await this.api.deleteMessage(c.chatId, m).catch(() => {});
       }
       return 'Отменено';
     }
-    await this.store.update((s) => {
-      const x = s.campaigns.find((y) => y.id === id);
-      if (x) x.status = 'sending';
+    await this.patch(id, (x) => {
+      x.status = 'sending';
     });
+    await this.editPreview(c, '⏳ Отправляю…');
     // рассылка может идти долго — не держим кнопку
     this.sending = this.sending
       .then(() => this.send(id))
@@ -245,18 +435,29 @@ export class Mailer {
     return 'Отправляю';
   }
 
+  private async editPreview(c: Campaign, text: string, kb?: InlineKeyboard): Promise<void> {
+    if (!c.previewId) return;
+    await this.api
+      .editMessageText(c.chatId, c.previewId, text.slice(0, 4000), {
+        link_preview_options: { is_disabled: true },
+        ...(kb ? { reply_markup: kb } : {}),
+      })
+      .catch(() => {});
+  }
+
+  private statusKeyboard(c: Campaign): InlineKeyboard {
+    return new InlineKeyboard().text('🔄 Обновить итоги', `o:stat:${c.id}`);
+  }
+
   /** Дождаться рассылок, которые уже идут. */
   idle(): Promise<void> {
     return this.sending;
   }
 
-  /** Рассылает и отчитывается в рабочем чате. Возвращается, когда всё отправлено. */
+  /** Рассылает и превращает предпросмотр в отчёт. */
   async send(id: number): Promise<void> {
     const c = this.campaign(id);
     if (!c) return;
-    if (c.previewId) {
-      await this.api.editMessageReplyMarkup(c.chatId, c.previewId).catch(() => {});
-    }
     const delivered: number[] = [];
     const failed: number[] = [];
     for (const u of this.recipients()) {
@@ -267,7 +468,16 @@ export class Mailer {
             link_preview_options: { is_disabled: true },
           });
         } else if (c.source) {
-          await this.api.copyMessage(u.id, c.source.chatId, c.source.messageId);
+          const ids = c.source.messageIds ?? [c.source.messageId];
+          if (ids.length > 1) {
+            await this.api.copyMessages(
+              u.id,
+              c.source.chatId,
+              [...ids].sort((a, b) => a - b),
+            );
+          } else {
+            await this.api.copyMessage(u.id, c.source.chatId, ids[0]!);
+          }
         } else {
           await this.api.sendMessage(u.id, c.text ?? '');
         }
@@ -285,36 +495,23 @@ export class Mailer {
       }
       if (this.cfg.sendDelayMs) await sleep(this.cfg.sendDelayMs);
     }
-    await this.store.update((s) => {
-      const x = s.campaigns.find((y) => y.id === id);
-      if (!x) return;
+    await this.patch(id, (x) => {
       x.status = 'sent';
       x.sentAt = this.now();
       x.delivered = delivered;
       x.failed = failed;
       x.answers = {};
     });
-    const lines = [
-      `${c.kind === 'check' ? '🔎 Проверка страниц' : '📣 Рассылка'} отправлена: ${delivered.length} из ${delivered.length + failed.length}.`,
-    ];
-    if (failed.length) {
-      lines.push(
-        `Не доставлено (заблокировали бота): ${failed.map((u) => this.who(u)).join(', ')}`,
-      );
+    const done = this.campaign(id)!;
+    if (c.kind === 'check') {
+      await this.editPreview(done, this.summary(done), this.statusKeyboard(done));
+    } else {
+      const lines = [`✅ Разослано: ${delivered.length} из ${delivered.length + failed.length}.`];
+      if (failed.length) {
+        lines.push(`Не дошло (заблокировали бота): ${failed.map((u) => this.who(u)).join(', ')}`);
+      }
+      await this.editPreview(done, lines.join('\n'));
     }
-    if (c.kind === 'check') lines.push('Итоги в любой момент: /checkstatus');
-    await this.report(c, lines.join('\n'));
-  }
-
-  private async report(c: Campaign, text: string): Promise<void> {
-    await this.api
-      .sendMessage(c.chatId, text.slice(0, 4000), {
-        ...(c.threadId !== undefined ? { message_thread_id: c.threadId } : {}),
-        ...(c.previewId
-          ? { reply_parameters: { message_id: c.previewId, allow_sending_without_reply: true } }
-          : {}),
-      })
-      .catch((error) => this.log.warn('Не удалось отправить отчёт о рассылке', { error }));
   }
 
   /* ───── ответы на проверку ───── */
@@ -322,9 +519,8 @@ export class Mailer {
   async answer(id: number, answer: CheckAnswer, from: User, messageId?: number): Promise<string> {
     const c = this.campaign(id);
     if (!c || c.kind !== 'check') return 'Проверка уже не идёт';
-    await this.store.update((s) => {
-      const x = s.campaigns.find((y) => y.id === id);
-      if (x) x.answers = { ...x.answers, [String(from.id)]: { answer, at: this.now() } };
+    await this.patch(id, (x) => {
+      x.answers = { ...x.answers, [String(from.id)]: { answer, at: this.now() } };
     });
     const tail = {
       ok: 'Спасибо! Отметили, что всё актуально.',
@@ -360,91 +556,92 @@ export class Mailer {
     }
     if (silent.length) lines.push(`Не ответили (${silent.length}): ${list(silent)}`);
     if (c.failed?.length) lines.push(`Не доставлено (${c.failed.length}): ${list(c.failed)}`);
+    if (c.status === 'sent' && c.sentAt) {
+      const sent = new Date(c.sentAt).getTime();
+      if (c.remindDays && !c.remindedAt) {
+        lines.push(
+          '',
+          `Напомню не ответившим ${formatShortDate(new Date(sent + c.remindDays * DAY), this.cfg.tz)}.`,
+        );
+      } else if (c.remindedAt) {
+        lines.push('', `Напомнил ${formatShortDate(new Date(c.remindedAt), this.cfg.tz)}.`);
+      }
+      lines.push(
+        `Итоги пришлю ${formatShortDate(new Date(sent + (c.closeDays ?? 7) * DAY), this.cfg.tz)}.`,
+      );
+    }
+    if (c.status === 'closed') lines.push('', 'Проверка завершена.');
     return lines.join('\n');
   }
 
-  /** /checkstatus — итоги последней проверки. */
-  status(msg: Message): string {
-    this.requireOps(msg);
-    const c = [...this.store.state.campaigns]
-      .reverse()
-      .find((x) => x.kind === 'check' && (x.status === 'sent' || x.status === 'closed'));
-    return c ? this.summary(c) : 'Проверок страниц ещё не было. Запустить: /pagecheck';
-  }
-
-  /** /users — кому бот может написать. Длинный список делится на сообщения. */
-  users(msg: Message): string[] {
-    this.requireOps(msg);
-    const all = Object.values(this.store.state.users).sort((a, b) =>
-      a.name.localeCompare(b.name, 'ru'),
-    );
-    if (!all.length) return ['Пока никто не открывал бота.'];
-    const active = all.filter((u) => !u.blocked);
-    const blocked = all.filter((u) => u.blocked);
-    const line = (u: BotUser) =>
-      `${u.name}${u.username ? ` (@${u.username})` : ''} — с ${formatShortDate(new Date(u.firstAt), this.cfg.tz)}`;
-    const lines = [
-      `👥 Пользователи бота: ${active.length}. Им дойдут рассылки.`,
-      '',
-      ...active.map((u, i) => `${i + 1}. ${line(u)}`),
-    ];
-    if (blocked.length) {
-      lines.push('', `Заблокировали бота (${blocked.length}):`, ...blocked.map(line));
-    }
-    const chunks: string[] = [];
-    let cur = '';
-    for (const l of lines) {
-      if (cur && cur.length + l.length + 1 > 4000) {
-        chunks.push(cur);
-        cur = l;
-      } else {
-        cur = cur ? `${cur}\n${l}` : l;
-      }
-    }
-    chunks.push(cur);
-    return chunks;
-  }
-
-  /** Раз в несколько минут: напоминания и итоги проверок. */
+  /** Раз в несколько минут: напоминания, итоги проверок, брошенные черновики. */
   async tick(): Promise<void> {
     const now = this.clock.now().getTime();
     for (const c of this.store.state.campaigns) {
+      if (c.status === 'preview' && now - new Date(c.createdAt).getTime() > PREVIEW_TTL) {
+        // предпросмотр так и не подтвердили — убираем, сообщение автора остаётся
+        await this.patch(c.id, (x) => {
+          x.status = 'cancelled';
+        });
+        if (c.previewId) await this.api.deleteMessage(c.chatId, c.previewId).catch(() => {});
+        continue;
+      }
       if (c.kind !== 'check' || c.status !== 'sent' || !c.sentAt) continue;
       const sent = new Date(c.sentAt).getTime();
       if (c.remindDays && !c.remindedAt && now >= sent + c.remindDays * DAY) {
         await this.remind(c);
       }
       if (now >= sent + (c.closeDays ?? 7) * DAY) {
-        await this.store.update((s) => {
-          const x = s.campaigns.find((y) => y.id === c.id);
-          if (!x) return;
+        await this.patch(c.id, (x) => {
           x.status = 'closed';
           x.closedAt = this.now();
         });
-        await this.report(c, `Итоги:\n${this.summary(c)}`);
+        const closed = this.campaign(c.id)!;
+        await this.editPreview(closed, this.summary(closed));
+        // итоги — новым сообщением, чтобы пришло уведомление
+        await this.api
+          .sendMessage(c.chatId, `📊 Итоги проверки страниц\n\n${this.summary(closed)}`, {
+            ...(c.threadId !== undefined ? { message_thread_id: c.threadId } : {}),
+            ...(c.previewId
+              ? { reply_parameters: { message_id: c.previewId, allow_sending_without_reply: true } }
+              : {}),
+          })
+          .catch((error) => this.log.warn('Не удалось прислать итоги проверки', { error }));
       }
     }
   }
 
   private async remind(c: Campaign): Promise<void> {
-    await this.store.update((s) => {
-      const x = s.campaigns.find((y) => y.id === c.id);
-      if (x) x.remindedAt = this.now();
+    await this.patch(c.id, (x) => {
+      x.remindedAt = this.now();
     });
     const silent = (c.delivered ?? []).filter((u) => !c.answers?.[String(u)]);
-    let sent = 0;
     for (const u of silent) {
-      try {
-        await this.api.sendMessage(u, this.checkText(true), {
+      await this.api
+        .sendMessage(u, this.checkText(true), {
           reply_markup: this.checkKeyboard(c.id),
           link_preview_options: { is_disabled: true },
-        });
-        sent++;
-      } catch (error) {
-        this.log.warn('Не удалось напомнить о проверке', { campaign: c.id, user: u, error });
-      }
+        })
+        .catch((error) =>
+          this.log.warn('Не удалось напомнить о проверке', { campaign: c.id, user: u, error }),
+        );
       if (this.cfg.sendDelayMs) await sleep(this.cfg.sendDelayMs);
     }
-    await this.report(c, `Напомнил ${sent} чел., кто ещё не ответил.\n\n${this.summary(c)}`);
+    const fresh = this.campaign(c.id)!;
+    await this.editPreview(fresh, this.summary(fresh), this.statusKeyboard(fresh));
+  }
+
+  /** Команда /mail: показать панель заново; вне темы рассылок — подсказка. */
+  async panelCommand(msg: Message, botName: string, api: Api): Promise<void> {
+    if (!this.topic) {
+      throw new UserError(
+        `Сначала выберите тему для рассылок: создайте в рабочем чате тему «Рассылки» и отправьте в ней /setup@${botName} КОД mail`,
+      );
+    }
+    if (!this.inMailTopic(msg.chat.id, msg.message_thread_id)) {
+      throw new UserError('Рассылки — в теме «Рассылки» рабочего чата.');
+    }
+    await this.api.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+    await this.showPanel(api);
   }
 }

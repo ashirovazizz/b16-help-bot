@@ -83,11 +83,12 @@ export interface Campaign {
   authorName: string;
   createdAt: string;
   status: 'preview' | 'sending' | 'sent' | 'cancelled' | 'closed';
-  /** Сообщение с предпросмотром и кнопками */
+  /** Сообщение бота с кнопками: предпросмотр, потом отчёт — одно и то же, правится на месте */
   previewId?: number;
-  /** Текст рассылки или сообщение рабочего чата, которое разошлём копией */
+  /** Старые рассылки: текст из команды */
   text?: string;
-  source?: { chatId: number; messageId: number };
+  /** Сообщение из темы «Рассылки», которое расходится копией; альбом — несколько */
+  source?: { chatId: number; messageId: number; messageIds?: number[]; mediaGroupId?: string };
   /** Проверка: через сколько дней напомнить и подвести итоги */
   remindDays?: number;
   closeDays?: number;
@@ -114,6 +115,8 @@ export interface State {
   users: Record<string, BotUser>;
   campaignSeq: number;
   campaigns: Campaign[];
+  /** Панель с кнопками в теме «Рассылки» */
+  mailPanel?: { chatId: number; messageId: number };
 }
 
 const emptyState = (): State => ({

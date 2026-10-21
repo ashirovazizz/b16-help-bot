@@ -50,6 +50,12 @@ export interface DeskConfig {
   envBindings: Record<string, Binding>;
 }
 
+/** Тема рассылок: процессов в ней нет, только панель с кнопками. */
+export const MAIL_TOPIC = 'mail';
+
+/** Темы, которые задаются командой /setup. */
+const TOPICS: Readonly<Record<string, string>> = { ...GROUPS, [MAIL_TOPIC]: 'Рассылки' };
+
 export type EditorAction = 'take' | 'done' | 'reject' | 'reopen';
 
 const ACTIONS: Record<EditorAction, { from: Status[]; to: Status }> = {
@@ -100,7 +106,7 @@ export class Desk {
   }
 
   isOpsChat(chatId: number): boolean {
-    return Object.keys(GROUPS).some((g) => this.binding(g)?.chatId === chatId);
+    return Object.keys(TOPICS).some((g) => this.binding(g)?.chatId === chatId);
   }
 
   /** /setup КОД [группа] — заявки группы будут приходить в тему, где отправлена команда. */
@@ -115,8 +121,8 @@ export class Desk {
     if (!safeEqual(code, this.cfg.setupCode)) {
       return 'Код не подошёл. Его показал установщик на сервере (строка SETUP_CODE в файле .env).';
     }
-    const title = GROUPS[group];
-    if (!title) return `Нет раздела «${group}». Есть: ${Object.keys(GROUPS).join(', ')}.`;
+    const title = TOPICS[group];
+    if (!title) return `Нет раздела «${group}». Есть: ${Object.keys(TOPICS).join(', ')}.`;
     const b: Binding = {
       chatId: msg.chat.id,
       ...(msg.message_thread_id !== undefined ? { threadId: msg.message_thread_id } : {}),
@@ -125,6 +131,7 @@ export class Desk {
       s.bindings[group] = b;
     });
     this.log.info('Раздел привязан к теме', { group, ...b });
+    if (group === MAIL_TOPIC) return 'Готово: рассылки — в этой теме.';
     return `Готово: заявки раздела «${title}» будут приходить сюда. Проверьте — напишите боту в личку /start.`;
   }
 

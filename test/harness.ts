@@ -210,7 +210,13 @@ export function harness(opts: HarnessOptions = {}) {
         },
       } as unknown as Update;
     },
-    callback(from: User, data: string, chat: 'private' | 'ops' = 'private', messageId = 1): Update {
+    callback(
+      from: User,
+      data: string,
+      chat: 'private' | 'ops' = 'private',
+      messageId = 1,
+      thread = TOPIC,
+    ): Update {
       const c = chat === 'private' ? privateChat(from) : groupChat;
       return {
         update_id: updateId++,
@@ -223,7 +229,7 @@ export function harness(opts: HarnessOptions = {}) {
             message_id: messageId,
             date: 0,
             chat: c,
-            ...(chat === 'ops' ? { message_thread_id: TOPIC, is_topic_message: true } : {}),
+            ...(chat === 'ops' ? { message_thread_id: thread, is_topic_message: true } : {}),
             text: '…',
           },
         },
@@ -232,7 +238,13 @@ export function harness(opts: HarnessOptions = {}) {
     groupText(
       from: User,
       text: string,
-      opts2: { replyTo?: number; thread?: number; photo?: boolean } = {},
+      opts2: {
+        replyTo?: number;
+        thread?: number;
+        photo?: boolean;
+        album?: string;
+        replyToUser?: boolean;
+      } = {},
     ): Update {
       return {
         update_id: updateId++,
@@ -244,6 +256,7 @@ export function harness(opts: HarnessOptions = {}) {
             ? { message_thread_id: opts2.thread, is_topic_message: true }
             : {}),
           from,
+          ...(opts2.album ? { media_group_id: opts2.album } : {}),
           ...(opts2.photo
             ? {
                 photo: [{ file_id: 'f', file_unique_id: 'u', width: 800, height: 1000 }],
@@ -256,7 +269,9 @@ export function harness(opts: HarnessOptions = {}) {
                   message_id: opts2.replyTo,
                   date: 0,
                   chat: groupChat,
-                  from: botInfo,
+                  from: opts2.replyToUser
+                    ? { id: 1, is_bot: false, first_name: 'Коллега' }
+                    : botInfo,
                   text: '…',
                 },
               }
